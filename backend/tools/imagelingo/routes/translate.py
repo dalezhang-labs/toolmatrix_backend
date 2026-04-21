@@ -251,7 +251,7 @@ async def get_history(store_handle: str = ""):
             results_map: dict[str, dict[str, str]] = {jid: {} for jid in job_ids}
             if job_ids:
                 cur.execute(
-                    "SELECT job_id, language, output_url FROM imagelingo.translated_images WHERE job_id = ANY(%s)",
+                    "SELECT job_id, language, output_url FROM imagelingo.translated_images WHERE job_id = ANY(%s::uuid[])",
                     (job_ids,),
                 )
                 for jid, lang, url in cur.fetchall():
