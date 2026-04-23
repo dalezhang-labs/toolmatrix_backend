@@ -1,5 +1,5 @@
-"""Lovart Service — direct Lovart Agent API integration for image translation rendering.
-Uses AK/SK HMAC-SHA256 auth and is aligned to the documented /v1/openapi endpoints.
+"""Lovart Service — image translation via Lovart Agent API.
+Optimized: shorter prompts, image standardization, faster polling.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import logging
 import os
 import ssl
 import time
-import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,23 +25,10 @@ if os.environ.get("LOVART_INSECURE_SSL") == "1":
     _ssl_ctx.check_hostname = False
     _ssl_ctx.verify_mode = ssl.CERT_NONE
 
-PROMPT_TEMPLATE_NO_OCR = (
-    "Translate ALL text visible in this image into {target_lang}. "
-    "Generate a new version of this image where every piece of text has been replaced "
-    "with its {target_lang} translation. Keep the exact same layout, colors, fonts, "
-    "and design. Output the final translated image."
-)
-
-PROMPT_TEMPLATE_WITH_OCR = (
-    "This is a product image containing text. "
-    "The OCR-detected text regions are:\n{ocr_text}\n\n"
-    "Task: Generate a new version of this exact image where ALL text has been "
-    "accurately translated into {target_lang}. Requirements:\n"
-    "1. Translate every piece of text faithfully\n"
-    "2. Keep the EXACT same image layout, background, colors, and visual design\n"
-    "3. Match the original font style, size, and positioning\n"
-    "4. Preserve all non-text elements unchanged\n"
-    "5. Output the final translated image"
+# Shorter, more direct prompt = faster Lovart processing
+PROMPT_TEMPLATE = (
+    "Replace all text in this product image with {target_lang} translation. "
+    "Keep the same layout, colors, fonts, and design. Output the translated image."
 )
 
 
@@ -144,11 +130,7 @@ class LovartService:
         ocr_texts: list[str] | None = None,
     ) -> str:
         project_id = self._get_or_create_project()
-        if ocr_texts:
-            ocr_block = "\n".join(f'- "{t}"' for t in ocr_texts)
-            prompt = PROMPT_TEMPLATE_WITH_OCR.format(target_lang=target_language, ocr_text=ocr_block)
-        else:
-            prompt = PROMPT_TEMPLATE_NO_OCR.format(target_lang=target_language)
+        prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
         thread_id = self._request("POST", f"{self.prefix}/chat", body={
             "prompt": prompt,
@@ -157,8 +139,10 @@ class LovartService:
         })["thread_id"]
         logger.info("Lovart chat started: thread_id=%s, target=%s", thread_id, target_language)
 
-        for _ in range(200):
-            await asyncio.sleep(3)
+        # Faster polling: start at 2s, increase gradually
+        for i in range(120):
+            wait = 2 if i < 10 else 3 if i < 30 else 5
+            await asyncio.sleep(wait)
             status_data = self._request("GET", f"{self.prefix}/chat/status", params={"thread_id": thread_id})
             status = status_data.get("status")
             if status == "done":

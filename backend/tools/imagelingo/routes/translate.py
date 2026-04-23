@@ -347,8 +347,10 @@ from fastapi import UploadFile, File
 
 @router.post("/upload")
 async def upload_image(file: UploadFile = File(...)):
-    """Accept a local image file, upload to imgbb (free CDN), return HTTPS URL."""
+    """Accept a local image file, standardize size, upload to imgbb, return HTTPS URL."""
     import os, base64, httpx
+    from io import BytesIO
+    from PIL import Image
 
     IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
     if not IMGBB_API_KEY:
@@ -357,6 +359,25 @@ async def upload_image(file: UploadFile = File(...)):
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:  # 10MB limit
         raise HTTPException(400, "File too large (max 10MB)")
+
+    # Standardize image: resize if too large (max 1500px on longest side)
+    # This speeds up Lovart processing without losing visible quality
+    try:
+        img = Image.open(BytesIO(content))
+        max_dim = 1500
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+            logger.info("Resized image from %s to %s", img.size, new_size)
+        # Convert to RGB if needed (e.g. RGBA PNGs)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        content = buf.getvalue()
+    except Exception as e:
+        logger.warning("Image standardization failed, using original: %s", e)
 
     b64 = base64.b64encode(content).decode()
     async with httpx.AsyncClient(timeout=30) as client:
