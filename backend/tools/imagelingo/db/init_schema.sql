@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS imagelingo.usage_logs (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   store_id          UUID REFERENCES imagelingo.stores(id),
   month             TEXT NOT NULL,
-  images_translated INT DEFAULT 0,
+  credits_used      INT DEFAULT 0,
   updated_at        TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(store_id, month)
 );
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS imagelingo.subscriptions (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   store_id            UUID REFERENCES imagelingo.stores(id) UNIQUE,
   plan                TEXT DEFAULT 'free',
-  images_limit        INT DEFAULT 5,
+  credits_limit       INT DEFAULT 100,
   billing_cycle_start TIMESTAMPTZ,
   updated_at          TIMESTAMPTZ DEFAULT NOW()
 );

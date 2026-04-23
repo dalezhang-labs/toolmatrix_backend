@@ -19,6 +19,10 @@ LANG_NAMES = {
     "FR": "French", "ES": "Spanish",
 }
 
+# Credit system: each store gets 100 credits/month, each image costs 20 credits
+CREDITS_PER_IMAGE = 20
+DEFAULT_CREDITS_LIMIT = 100
+
 router = APIRouter()
 
 
@@ -106,34 +110,35 @@ def _increment_usage(store_id: str):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO imagelingo.usage_logs (store_id, month, images_translated)
-                   VALUES (%s, %s, 1)
+                """INSERT INTO imagelingo.usage_logs (store_id, month, credits_used)
+                   VALUES (%s, %s, %s)
                    ON CONFLICT (store_id, month) DO UPDATE
-                     SET images_translated = imagelingo.usage_logs.images_translated + 1,
+                     SET credits_used = imagelingo.usage_logs.credits_used + %s,
                          updated_at = NOW()""",
-                (store_id, month),
+                (store_id, month, CREDITS_PER_IMAGE, CREDITS_PER_IMAGE),
             )
         conn.commit()
 
 
 def _check_quota(store_id: str) -> tuple[bool, int, int]:
+    """Returns (allowed, credits_used, credits_limit)."""
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT COALESCE(ul.images_translated, 0), COALESCE(s.images_limit, 5)
+                """SELECT COALESCE(ul.credits_used, 0), COALESCE(s.credits_limit, %s)
                    FROM imagelingo.subscriptions s
                    LEFT JOIN imagelingo.usage_logs ul ON ul.store_id = s.store_id AND ul.month = %s
                    WHERE s.store_id = %s""",
-                (month, store_id),
+                (DEFAULT_CREDITS_LIMIT, month, store_id),
             )
             row = cur.fetchone()
     if not row:
-        return True, 0, 5
+        return True, 0, DEFAULT_CREDITS_LIMIT
     used, limit = row
     if limit <= 0:
-        return True, used, 0
-    return used < limit, used, limit
+        return True, used, 0  # unlimited
+    return used + CREDITS_PER_IMAGE <= limit, used, limit
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────
@@ -290,8 +295,8 @@ async def get_usage(store_handle: str = ""):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"""SELECT s.id, sub.plan, COALESCE(sub.images_limit, 5),
-                           COALESCE(ul.images_translated, 0)
+                f"""SELECT s.id, sub.plan, COALESCE(sub.credits_limit, {DEFAULT_CREDITS_LIMIT}),
+                           COALESCE(ul.credits_used, 0)
                     FROM imagelingo.stores s
                     LEFT JOIN imagelingo.subscriptions sub ON sub.store_id = s.id
                     LEFT JOIN imagelingo.usage_logs ul ON ul.store_id = s.id AND ul.month = %s
@@ -300,6 +305,8 @@ async def get_usage(store_handle: str = ""):
             )
             row = cur.fetchone()
     if not row:
-        return {"plan": "free", "limit": 5, "used": 0, "month": month}
+        return {"plan": "free", "credits_limit": DEFAULT_CREDITS_LIMIT, "credits_used": 0,
+                "credits_per_image": CREDITS_PER_IMAGE, "month": month}
     _, plan, limit, used = row
-    return {"plan": plan or "free", "limit": limit or 5, "used": used, "month": month}
+    return {"plan": plan or "free", "credits_limit": limit, "credits_used": used,
+            "credits_per_image": CREDITS_PER_IMAGE, "month": month}
