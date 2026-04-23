@@ -245,11 +245,11 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
 
 @router.get("/history")
 async def get_history(store_handle: str = ""):
-    where = ""
-    params: list = []
-    if store_handle:
-        where = "WHERE j.store_id = (SELECT id FROM imagelingo.stores WHERE handle = %s)"
-        params.append(store_handle)
+    # Require store_handle — never return cross-store data
+    if not store_handle:
+        raise HTTPException(400, "store_handle is required")
+    where = "WHERE j.store_id = (SELECT id FROM imagelingo.stores WHERE handle = %s)"
+    params: list = [store_handle]
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -310,3 +310,36 @@ async def get_usage(store_handle: str = ""):
     _, plan, limit, used = row
     return {"plan": plan or "free", "credits_limit": limit, "credits_used": used,
             "credits_per_image": CREDITS_PER_IMAGE, "month": month}
+
+
+# ── Image upload (for drag-and-drop local files) ─────────────────────────────
+
+@router.post("/upload")
+async def upload_image(file: "UploadFile"):
+    """Accept a local image file, upload to imgbb (free CDN), return HTTPS URL."""
+    import os, base64, httpx
+    from fastapi import UploadFile
+
+    IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
+    if not IMGBB_API_KEY:
+        raise HTTPException(500, "Image upload not configured (IMGBB_API_KEY missing)")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10MB limit
+        raise HTTPException(400, "File too large (max 10MB)")
+
+    b64 = base64.b64encode(content).decode()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.imgbb.com/1/upload",
+            data={"key": IMGBB_API_KEY, "image": b64},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Image upload failed: {resp.text[:200]}")
+
+    data = resp.json()
+    url = data.get("data", {}).get("url", "")
+    if not url:
+        raise HTTPException(502, "Image upload returned no URL")
+
+    return {"url": url}
