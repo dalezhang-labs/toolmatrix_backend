@@ -105,8 +105,28 @@ def _save_translated_image(job_id: str, language: str, output_url: str):
         conn.commit()
 
 
+def _get_billing_period(store_id: str) -> str:
+    """Return billing period key based on store's installed_at date.
+    Each store gets a 30-day rolling cycle starting from install date.
+    Period key format: 'YYYY-MM-DD_to_YYYY-MM-DD'."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT installed_at FROM imagelingo.stores WHERE id = %s", (store_id,))
+            row = cur.fetchone()
+    if not row or not row[0]:
+        return datetime.now(timezone.utc).strftime("%Y-%m")  # fallback
+    installed_at = row[0]
+    now = datetime.now(timezone.utc)
+    # Calculate how many full 30-day cycles have passed
+    days_since = (now - installed_at).days
+    cycle_num = days_since // 30
+    cycle_start = installed_at + __import__("datetime").timedelta(days=cycle_num * 30)
+    cycle_end = cycle_start + __import__("datetime").timedelta(days=30)
+    return f"{cycle_start.strftime('%Y-%m-%d')}_to_{cycle_end.strftime('%Y-%m-%d')}"
+
+
 def _increment_usage(store_id: str):
-    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    period = _get_billing_period(store_id)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -115,14 +135,14 @@ def _increment_usage(store_id: str):
                    ON CONFLICT (store_id, month) DO UPDATE
                      SET credits_used = imagelingo.usage_logs.credits_used + %s,
                          updated_at = NOW()""",
-                (store_id, month, CREDITS_PER_IMAGE, CREDITS_PER_IMAGE),
+                (store_id, period, CREDITS_PER_IMAGE, CREDITS_PER_IMAGE),
             )
         conn.commit()
 
 
 def _check_quota(store_id: str) -> tuple[bool, int, int]:
     """Returns (allowed, credits_used, credits_limit)."""
-    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    period = _get_billing_period(store_id)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -130,7 +150,7 @@ def _check_quota(store_id: str) -> tuple[bool, int, int]:
                    FROM imagelingo.subscriptions s
                    LEFT JOIN imagelingo.usage_logs ul ON ul.store_id = s.store_id AND ul.month = %s
                    WHERE s.store_id = %s""",
-                (DEFAULT_CREDITS_LIMIT, month, store_id),
+                (DEFAULT_CREDITS_LIMIT, period, store_id),
             )
             row = cur.fetchone()
     if not row:
@@ -285,13 +305,22 @@ async def get_history(store_handle: str = ""):
 
 @router.get("/usage")
 async def get_usage(store_handle: str = ""):
-    month = datetime.now(timezone.utc).strftime("%Y-%m")
     if store_handle:
         store_clause = "WHERE s.handle = %s"
         params: list = [store_handle]
     else:
         store_clause = ""
         params = []
+    # Resolve store to get billing period
+    store_id = None
+    if store_handle:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM imagelingo.stores WHERE handle = %s", (store_handle,))
+                row = cur.fetchone()
+                if row:
+                    store_id = str(row[0])
+    period = _get_billing_period(store_id) if store_id else datetime.now(timezone.utc).strftime("%Y-%m")
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -301,24 +330,25 @@ async def get_usage(store_handle: str = ""):
                     LEFT JOIN imagelingo.subscriptions sub ON sub.store_id = s.id
                     LEFT JOIN imagelingo.usage_logs ul ON ul.store_id = s.id AND ul.month = %s
                     {store_clause} LIMIT 1""",
-                [month] + params,
+                [period] + params,
             )
             row = cur.fetchone()
     if not row:
         return {"plan": "free", "credits_limit": DEFAULT_CREDITS_LIMIT, "credits_used": 0,
-                "credits_per_image": CREDITS_PER_IMAGE, "month": month}
+                "credits_per_image": CREDITS_PER_IMAGE, "period": period}
     _, plan, limit, used = row
     return {"plan": plan or "free", "credits_limit": limit, "credits_used": used,
-            "credits_per_image": CREDITS_PER_IMAGE, "month": month}
+            "credits_per_image": CREDITS_PER_IMAGE, "period": period}
 
 
 # ── Image upload (for drag-and-drop local files) ─────────────────────────────
 
+from fastapi import UploadFile, File
+
 @router.post("/upload")
-async def upload_image(file: "UploadFile"):
+async def upload_image(file: UploadFile = File(...)):
     """Accept a local image file, upload to imgbb (free CDN), return HTTPS URL."""
     import os, base64, httpx
-    from fastapi import UploadFile
 
     IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
     if not IMGBB_API_KEY:
