@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.tools.imagelingo.routes import auth, translate, webhook
+from backend.tools.fitness import routes as fitness_routes
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/imagelingo/auth")
 app.include_router(translate.router, prefix="/api/imagelingo/translate")
 app.include_router(webhook.router, prefix="/api/imagelingo/webhooks")
+
+app.include_router(fitness_routes.router, prefix="/api")
 
 # -- Future tools
 # app.include_router(tool2.router, prefix="/api/tool2")
