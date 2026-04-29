@@ -41,6 +41,41 @@ def verify_hmac(params: dict) -> bool:
     return hmac.compare_digest(expected, sign)
 
 
+# ── App entry point (Shopline loads this URL) ────────────────────────────
+
+@router.get("/entry")
+async def app_entry(request: Request):
+    """Shopline loads this URL when merchant opens the app.
+    - First visit: has sign param → verify signature, check if authorized, redirect to OAuth or frontend
+    - Subsequent visits: Shopline still sends sign params → verify and redirect to frontend
+    """
+    params = dict(request.query_params)
+    handle = params.get("handle", "")
+
+    # Verify signature
+    if not verify_hmac(params):
+        logger.warning("App entry signature verification failed for handle=%s", handle)
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Check if store already has a valid token
+    from backend.tools.imagelingo.services.token_store import get_token
+    token = get_token(handle) if handle else None
+
+    if token:
+        # Already authorized → redirect to frontend (loaded inside Shopline iframe)
+        frontend_url = _env("FRONTEND_URL") or "http://localhost:3000"
+        return RedirectResponse(f"{frontend_url}?shop={handle}")
+
+    # Not authorized → redirect to OAuth
+    app_key = _env("SHOPLINE_APP_KEY")
+    redirect_uri = urllib.parse.quote(_env("SHOPLINE_REDIRECT_URI"), safe="")
+    auth_url = (
+        f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
+        f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"
+    )
+    return RedirectResponse(auth_url)
+
+
 # ── Step 2: Verify install request and redirect to OAuth ─────────────────
 
 @router.get("/install")
@@ -156,15 +191,7 @@ async def callback(request: Request):
         conn.commit()
 
     frontend_url = _env("FRONTEND_URL") or "http://localhost:3000"
-    app_key = _env("SHOPLINE_APP_KEY")
-
-    # Redirect back to the app inside Shopline admin (embedded app)
-    # This avoids the double-sidebar nesting issue when redirecting to Vercel directly
-    if app_key:
-        shopline_app_url = f"https://{handle}.myshopline.com/admin/apps/{app_key}"
-        return RedirectResponse(shopline_app_url)
-
-    # Fallback for standalone / dev mode
+    # Redirect to frontend after OAuth (loaded inside Shopline iframe)
     return RedirectResponse(f"{frontend_url}?shop={handle}")
 
 
