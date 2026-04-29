@@ -44,9 +44,10 @@ def _shopline_headers(token: str) -> dict:
 @router.get("/list")
 async def list_products(
     store_handle: str = "",
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=12, ge=1, le=50),
     page_info: str = "",
     status: str = "active",
+    title: str = "",
 ):
     """Fetch products from Shopline with cover images."""
     handle, token = _get_store_info(store_handle)
@@ -59,6 +60,8 @@ async def list_products(
     }
     if page_info:
         params["page_info"] = page_info
+    if title:
+        params["title"] = title
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(url, params=params, headers=_shopline_headers(token))
