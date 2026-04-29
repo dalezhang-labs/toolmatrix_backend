@@ -7,7 +7,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.tools.imagelingo.routes import auth, translate, webhook
+from backend.tools.imagelingo.routes import auth, translate, webhook, products
 from backend.tools.fitness import routes as fitness_routes
 from backend.shared.s3_router import router as s3_router
 
@@ -30,6 +30,7 @@ app.add_middleware(
 # -- Tool: ImageLingo
 app.include_router(auth.router, prefix="/api/imagelingo/auth")
 app.include_router(translate.router, prefix="/api/imagelingo/translate")
+app.include_router(products.router, prefix="/api/imagelingo/products")
 app.include_router(webhook.router, prefix="/api/imagelingo/webhooks")
 
 app.include_router(fitness_routes.router, prefix="/api")

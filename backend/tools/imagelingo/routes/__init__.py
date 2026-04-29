@@ -1,3 +1,3 @@
-from . import auth, translate, webhook
+from . import auth, translate, webhook, products
 
-__all__ = ["auth", "translate", "webhook"]
+__all__ = ["auth", "translate", "webhook", "products"]
