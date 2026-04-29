@@ -190,8 +190,8 @@ async def callback(request: Request):
             row = cur.fetchone()
             if row:
                 cur.execute(
-                    """INSERT INTO imagelingo.subscriptions (store_id, plan, images_limit)
-                       VALUES (%s, 'free', 5)
+                    """INSERT INTO imagelingo.subscriptions (store_id, plan, credits_limit)
+                       VALUES (%s, 'free', 200)
                        ON CONFLICT (store_id) DO NOTHING""",
                     (str(row[0]),),
                 )
