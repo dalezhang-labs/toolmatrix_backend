@@ -35,32 +35,37 @@ def _get_client():
     return _client
 
 
-# GPT-image-1.5 supported sizes
+# GPT-image-1.5 supported sizes and accepted aspect ratios
 API_SIZES = {
     "square": (1024, 1024),     # 1:1
     "landscape": (1536, 1024),  # 3:2
     "portrait": (1024, 1536),   # 2:3
 }
-# Max aspect ratio we can handle (beyond this, too much padding = bad results)
-MAX_ASPECT_RATIO = 2.5  # e.g. 2.5:1 or 1:2.5
+
+# Accepted aspect ratio ranges for e-commerce images
+# ratio = width / height
+RATIO_RANGES = {
+    "square":    (0.85, 1.18),   # ~1:1 (allows slight deviation)
+    "landscape": (1.18, 1.65),   # ~4:3 to ~3:2
+    "portrait":  (0.60, 0.85),   # ~2:3 to ~3:4
+}
 
 
-def _pick_api_size(w: int, h: int) -> tuple[int, int]:
-    """Pick the best API size for the given image dimensions."""
+def _classify_aspect(w: int, h: int) -> tuple[str, tuple[int, int]] | None:
+    """Classify image into a supported aspect ratio category.
+    Returns (category, api_size) or None if unsupported.
+    """
     ratio = w / h
-    if ratio > 1.2:
-        return API_SIZES["landscape"]  # 1536x1024
-    elif ratio < 0.8:
-        return API_SIZES["portrait"]   # 1024x1536
-    else:
-        return API_SIZES["square"]     # 1024x1024
+    for category, (lo, hi) in RATIO_RANGES.items():
+        if lo <= ratio <= hi:
+            return category, API_SIZES[category]
+    return None
 
 
 def _download_and_prepare(url: str) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
-    """Download image, pad to API-compatible aspect ratio, return (bytes, original_size, api_size).
-
-    Strategy: scale down to fit within API size, then pad with edge color (no crop, no loss).
-    After translation, the result is cropped back to remove padding.
+    """Download image, validate aspect ratio, resize to API size.
+    No padding — only resize (stretch-free, content-preserving).
+    Raises ValueError if aspect ratio is not supported.
     """
     from PIL import Image
 
@@ -74,91 +79,46 @@ def _download_and_prepare(url: str) -> tuple[bytes, tuple[int, int], tuple[int, 
         img = img.convert("RGB")
 
     orig_w, orig_h = img.size
-    aspect = orig_w / orig_h
 
-    # Check aspect ratio limit
-    if aspect > MAX_ASPECT_RATIO or aspect < 1 / MAX_ASPECT_RATIO:
-        logger.warning("Image aspect ratio %.2f exceeds limit %.1f, may have quality issues", aspect, MAX_ASPECT_RATIO)
+    # Validate aspect ratio
+    result = _classify_aspect(orig_w, orig_h)
+    if result is None:
+        ratio = orig_w / orig_h
+        raise ValueError(
+            f"Unsupported image aspect ratio ({orig_w}×{orig_h}, ratio {ratio:.2f}). "
+            f"ImageLingo supports e-commerce image ratios: "
+            f"1:1 (square), 4:3/3:2 (landscape), 2:3/3:4 (portrait). "
+            f"Please crop your image to a supported ratio."
+        )
 
-    # Pick best API size
-    api_w, api_h = _pick_api_size(orig_w, orig_h)
+    category, (api_w, api_h) = result
 
-    # Scale image to fit within API size (maintain aspect ratio)
-    scale = min(api_w / orig_w, api_h / orig_h)
-    if scale < 1:
-        new_w = int(orig_w * scale)
-        new_h = int(orig_h * scale)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-    else:
-        new_w, new_h = orig_w, orig_h
-        # If image is smaller than API size, scale up to use full resolution
-        scale_up = min(api_w / orig_w, api_h / orig_h)
-        if scale_up > 1:
-            new_w = int(orig_w * scale_up)
-            new_h = int(orig_h * scale_up)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-
-    # Pad to exact API size with edge color (sample from image borders)
-    if new_w != api_w or new_h != api_h:
-        # Use the average color of the image edges as padding color
-        import numpy as np
-        arr = np.array(img)
-        edge_pixels = np.concatenate([
-            arr[0, :],      # top row
-            arr[-1, :],     # bottom row
-            arr[:, 0],      # left column
-            arr[:, -1],     # right column
-        ])
-        pad_color = tuple(int(c) for c in edge_pixels.mean(axis=0))
-
-        padded = Image.new("RGB", (api_w, api_h), pad_color)
-        # Center the image on the padded canvas
-        offset_x = (api_w - new_w) // 2
-        offset_y = (api_h - new_h) // 2
-        padded.paste(img, (offset_x, offset_y))
-        img = padded
+    # Direct resize to API size (no padding needed since ratio is compatible)
+    img = img.resize((api_w, api_h), Image.LANCZOS)
 
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=90, optimize=True)
     out = buf.getvalue()
 
-    logger.info("Prepare %.2fs: orig=%dx%d → api=%dx%d (padded from %dx%d), %d bytes",
-                time.perf_counter() - t0, orig_w, orig_h, api_w, api_h, new_w, new_h, len(out))
+    logger.info("Prepare %.2fs: %dx%d → %dx%d (%s), %d bytes",
+                time.perf_counter() - t0, orig_w, orig_h, api_w, api_h, category, len(out))
 
     return out, (orig_w, orig_h), (api_w, api_h)
 
 
 def _restore_original_size(result_bytes: bytes, orig_size: tuple[int, int], api_size: tuple[int, int]) -> bytes:
-    """Crop padding and resize result back to original dimensions."""
+    """Resize result back to original dimensions."""
     from PIL import Image
 
+    if orig_size == api_size:
+        return result_bytes
+
     img = Image.open(BytesIO(result_bytes))
-    api_w, api_h = api_size
-    orig_w, orig_h = orig_size
-
-    # Calculate where the actual content is (center crop to remove padding)
-    scale = min(api_w / orig_w, api_h / orig_h)
-    if scale < 1:
-        content_w = int(orig_w * scale)
-        content_h = int(orig_h * scale)
-    else:
-        scale_up = min(api_w / orig_w, api_h / orig_h)
-        content_w = int(orig_w * scale_up)
-        content_h = int(orig_h * scale_up)
-
-    offset_x = (api_w - content_w) // 2
-    offset_y = (api_h - content_h) // 2
-
-    # Crop out the padding
-    cropped = img.crop((offset_x, offset_y, offset_x + content_w, offset_y + content_h))
-
-    # Resize back to original dimensions
-    if cropped.size != (orig_w, orig_h):
-        cropped = cropped.resize((orig_w, orig_h), Image.LANCZOS)
+    img = img.resize(orig_size, Image.LANCZOS)
 
     buf = BytesIO()
-    cropped.save(buf, format="PNG", optimize=True)
-    logger.info("Restored: %dx%d → crop %dx%d → resize %dx%d", api_w, api_h, content_w, content_h, orig_w, orig_h)
+    img.save(buf, format="PNG", optimize=True)
+    logger.info("Restored: %dx%d → %dx%d", api_size[0], api_size[1], orig_size[0], orig_size[1])
     return buf.getvalue()
 
 
