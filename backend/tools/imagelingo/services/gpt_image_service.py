@@ -94,34 +94,53 @@ async def translate_image(
     if not b64_data:
         raise ValueError("GPT Image edit returned no image data")
 
-    # Upload the base64 image to a public URL
-    # For now, use Lovart's upload if available, otherwise return a data URI
+    # Upload the translated image to S3
     image_result_bytes = base64.b64decode(b64_data)
 
-    # Try to upload to Lovart CDN (reuse existing infrastructure)
-    try:
-        from backend.tools.imagelingo.services.lovart_service import LovartService
-        lovart = LovartService()
-        cdn_url = lovart.upload_file(image_result_bytes, f"translated_{target_language}.png")
-        logger.info("Translated image uploaded to Lovart CDN: %s", cdn_url)
-        return cdn_url
-    except Exception as upload_err:
-        logger.warning("Lovart upload failed, using inline hosting: %s", upload_err)
+    import datetime
+    s3_cfg = {
+        "access_key": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+        "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+        "bucket": os.environ.get("S3_BUCKET", ""),
+        "region": os.environ.get("S3_REGION", "us-east-2"),
+    }
 
-    # Fallback: save to a temporary file and serve via a simple endpoint
-    # For production, you'd want to upload to S3/R2/etc.
-    # For now, store in DB as base64 and return a serving URL
-    import uuid
-    image_id = str(uuid.uuid4())[:12]
+    if s3_cfg["access_key"] and s3_cfg["bucket"]:
+        from backend.shared.s3_utils import sign_s3_upload
+        import httpx as _httpx
 
-    # Store in a simple file-based cache (Railway has ephemeral storage, but OK for short-lived results)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        uid = str(uuid.uuid4())[:8]
+        s3_key = f"imagelingo/translated/{ts}_{uid}_{target_language}.png"
+
+        signed = sign_s3_upload(
+            file_bytes=image_result_bytes,
+            bucket=s3_cfg["bucket"],
+            object_key=s3_key,
+            region=s3_cfg["region"],
+            access_key=s3_cfg["access_key"],
+            secret_key=s3_cfg["secret_key"],
+            content_type="image/png",
+            date=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        async with _httpx.AsyncClient(timeout=30) as s3_client:
+            s3_resp = await s3_client.put(signed["url"], headers=signed["headers"], content=image_result_bytes)
+
+        if s3_resp.status_code in (200, 201):
+            s3_url = f"https://{s3_cfg['bucket']}.s3.{s3_cfg['region']}.amazonaws.com/{s3_key}"
+            logger.info("Translated image uploaded to S3: %s", s3_url)
+            return s3_url
+
+        logger.warning("S3 upload failed (%d), falling back to local", s3_resp.status_code)
+
+    # Fallback: save locally
+    import uuid as _uuid
+    image_id = str(_uuid.uuid4())[:12]
     cache_dir = "/tmp/imagelingo_results"
     os.makedirs(cache_dir, exist_ok=True)
     file_path = f"{cache_dir}/{image_id}.png"
     with open(file_path, "wb") as f:
         f.write(image_result_bytes)
-
-    # Return a URL that the translate route can serve
-    # This requires adding a static file serving route
     logger.info("Translated image saved locally: %s", file_path)
     return f"/api/imagelingo/translate/results/{image_id}.png"

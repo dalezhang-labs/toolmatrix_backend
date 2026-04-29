@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.tools.imagelingo.routes import auth, translate, webhook
 from backend.tools.fitness import routes as fitness_routes
+from backend.shared.s3_router import router as s3_router
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ app.include_router(translate.router, prefix="/api/imagelingo/translate")
 app.include_router(webhook.router, prefix="/api/imagelingo/webhooks")
 
 app.include_router(fitness_routes.router, prefix="/api")
+
+# -- Shared: S3 upload (used by all tools)
+app.include_router(s3_router, prefix="/api/shared/s3")
 
 # -- Future tools
 # app.include_router(tool2.router, prefix="/api/tool2")

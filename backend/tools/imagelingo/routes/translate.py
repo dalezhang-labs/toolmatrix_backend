@@ -359,22 +359,17 @@ from fastapi import UploadFile, File
 
 @router.post("/upload")
 async def upload_image(file: UploadFile = File(...)):
-    """Accept a local image file, standardize size, upload to imgbb, return HTTPS URL."""
-    import os, base64, httpx
+    """Accept a local image file, standardize size, upload to S3, return HTTPS URL."""
+    import datetime
     from io import BytesIO
-    from PIL import Image
-
-    IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
-    if not IMGBB_API_KEY:
-        raise HTTPException(500, "Image upload not configured (IMGBB_API_KEY missing)")
 
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:  # 10MB limit
+    if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "File too large (max 10MB)")
 
     # Standardize image: resize if too large (max 1500px on longest side)
-    # This speeds up Lovart processing without losing visible quality
     try:
+        from PIL import Image
         img = Image.open(BytesIO(content))
         max_dim = 1500
         if max(img.size) > max_dim:
@@ -382,7 +377,6 @@ async def upload_image(file: UploadFile = File(...)):
             new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
             img = img.resize(new_size, Image.LANCZOS)
             logger.info("Resized image from %s to %s", img.size, new_size)
-        # Convert to RGB if needed (e.g. RGBA PNGs)
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
         buf = BytesIO()
@@ -391,22 +385,43 @@ async def upload_image(file: UploadFile = File(...)):
     except Exception as e:
         logger.warning("Image standardization failed, using original: %s", e)
 
-    b64 = base64.b64encode(content).decode()
+    # Upload to S3 via shared utility
+    from backend.shared.s3_utils import sign_s3_upload
+    import httpx
+
+    cfg = {
+        "access_key": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+        "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+        "bucket": os.environ.get("S3_BUCKET", ""),
+        "region": os.environ.get("S3_REGION", "us-east-2"),
+    }
+    if not cfg["access_key"] or not cfg["bucket"]:
+        raise HTTPException(500, "S3 not configured (missing AWS_ACCESS_KEY_ID or S3_BUCKET)")
+
+    ext = (file.filename or "upload.jpg").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "jpg"
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    uid = str(uuid.uuid4())[:8]
+    s3_key = f"imagelingo/uploads/{ts}_{uid}.{ext}"
+
+    signed = sign_s3_upload(
+        file_bytes=content,
+        bucket=cfg["bucket"],
+        object_key=s3_key,
+        region=cfg["region"],
+        access_key=cfg["access_key"],
+        secret_key=cfg["secret_key"],
+        content_type=file.content_type or "image/jpeg",
+        date=datetime.datetime.now(datetime.timezone.utc),
+    )
+
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.imgbb.com/1/upload",
-            data={"key": IMGBB_API_KEY, "image": b64},
-        )
-    if resp.status_code != 200:
-        raise HTTPException(502, f"Image upload failed: {resp.text[:200]}")
+        resp = await client.put(signed["url"], headers=signed["headers"], content=content)
 
-    data = resp.json()
-    url = data.get("data", {}).get("url", "")
-    if not url:
-        raise HTTPException(502, "Image upload returned no URL")
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, f"S3 upload failed (HTTP {resp.status_code})")
 
+    url = f"https://{cfg['bucket']}.s3.{cfg['region']}.amazonaws.com/{s3_key}"
     return {"url": url}
-
 
 # ── Serve locally-cached translated images (GPT Image fallback) ──────────────
 
