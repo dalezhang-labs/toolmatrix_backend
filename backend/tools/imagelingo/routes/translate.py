@@ -170,24 +170,31 @@ def _check_quota(store_id: str) -> tuple[bool, int, int]:
 async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_languages: list[str],
                        quality: str = "medium", size: str = "1024x1024"):
     import time
+    import asyncio
     t0 = time.perf_counter()
     _update_job_status(job_id, "processing")
     try:
-        use_gpt = bool(os.environ.get("AZURE_OPENAI_API_KEY"))
+        from backend.tools.imagelingo.services.gpt_image_service import translate_image as gpt_translate
+        from backend.tools.imagelingo.services.ocr_render_service import translate_image as ocr_translate
 
-        if use_gpt:
-            from backend.tools.imagelingo.services.gpt_image_service import translate_image as gpt_translate
-            for lang in target_languages:
-                lang_name = LANG_NAMES.get(lang.upper(), lang)
-                output_url = await gpt_translate(image_url, lang_name, quality=quality, size=size)
-                _save_translated_image(job_id, lang, output_url)
-        else:
-            from backend.tools.imagelingo.services.lovart_service import LovartService
-            lovart = LovartService()
-            for lang in target_languages:
-                lang_name = LANG_NAMES.get(lang.upper(), lang)
-                output_url = await lovart.translate_image(image_url, lang_name)
-                _save_translated_image(job_id, lang, output_url)
+        for lang in target_languages:
+            lang_name = LANG_NAMES.get(lang.upper(), lang)
+
+            # Run both methods in parallel
+            gpt_task = asyncio.create_task(
+                _safe_translate(gpt_translate, image_url, lang_name, quality=quality, size=size)
+            )
+            ocr_task = asyncio.create_task(
+                _safe_translate(ocr_translate, image_url, lang_name)
+            )
+
+            # Wait for both, save results as they complete
+            for coro in asyncio.as_completed([gpt_task, ocr_task]):
+                method, url = await coro
+                if url:
+                    # Save with method suffix: "JA" for gpt, "JA:ocr" for ocr-render
+                    save_key = lang if method == "gpt" else f"{lang}:ocr"
+                    _save_translated_image(job_id, save_key, url)
 
         _update_job_status(job_id, "done")
         _increment_usage(store_id)
@@ -195,8 +202,19 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         logger.error("Pipeline failed for job %s: %s", job_id, error_msg)
-        logger.error("Pipeline failed after %.2fs for job %s", time.perf_counter() - t0, job_id)
         _update_job_status(job_id, "failed", error_msg)
+
+
+async def _safe_translate(fn, image_url: str, lang_name: str, **kwargs) -> tuple[str, str]:
+    """Run a translate function safely, return (method_name, url) or (method_name, "")."""
+    method = "ocr" if "ocr_render" in fn.__module__ else "gpt"
+    try:
+        url = await fn(image_url, lang_name, **kwargs)
+        logger.info("%s translation completed: %s", method, lang_name)
+        return method, url
+    except Exception as e:
+        logger.warning("%s translation failed for %s: %s", method, lang_name, e)
+        return method, ""
 
 
 # ── Routes ───────────────────────────────────────────────────────────────
