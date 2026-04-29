@@ -386,7 +386,7 @@ async def upload_image(file: UploadFile = File(...)):
         logger.warning("Image standardization failed, using original: %s", e)
 
     # Upload to S3 via shared utility
-    from backend.shared.s3_utils import sign_s3_upload
+    from backend.shared.s3_utils import sign_s3_upload, generate_presigned_url
     import httpx
 
     cfg = {
@@ -420,8 +420,16 @@ async def upload_image(file: UploadFile = File(...)):
     if resp.status_code not in (200, 201):
         raise HTTPException(502, f"S3 upload failed (HTTP {resp.status_code})")
 
-    url = f"https://{cfg['bucket']}.s3.{cfg['region']}.amazonaws.com/{s3_key}"
-    return {"url": url}
+    # Return presigned URL (private bucket, 24h expiry)
+    presigned = generate_presigned_url(
+        bucket=cfg["bucket"],
+        object_key=s3_key,
+        region=cfg["region"],
+        access_key=cfg["access_key"],
+        secret_key=cfg["secret_key"],
+        expires_in=86400,
+    )
+    return {"url": presigned, "key": s3_key}
 
 # ── Serve locally-cached translated images (GPT Image fallback) ──────────────
 

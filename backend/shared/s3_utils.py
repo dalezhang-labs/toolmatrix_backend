@@ -86,3 +86,69 @@ def sign_s3_upload(
         headers["x-amz-acl"] = acl
 
     return {"url": endpoint, "headers": headers}
+
+
+def generate_presigned_url(
+    bucket: str,
+    object_key: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    expires_in: int = 3600,
+) -> str:
+    """Generate a presigned GET URL for an S3 object (AWS Signature V4).
+
+    Args:
+        expires_in: URL validity in seconds (default 1 hour, max 7 days).
+
+    Returns:
+        Presigned URL string.
+    """
+    service = "s3"
+    host = f"{bucket}.s3.{region}.amazonaws.com"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+    credential = f"{access_key}/{credential_scope}"
+
+    canonical_uri = f"/{urllib.parse.quote(object_key)}"
+
+    # Query parameters (must be sorted)
+    query_params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": credential,
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_in),
+        "X-Amz-SignedHeaders": "host",
+    }
+    canonical_querystring = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in sorted(query_params.items())
+    )
+
+    canonical_headers = f"host:{host}\n"
+    signed_headers = "host"
+
+    # For presigned URLs, payload is UNSIGNED
+    canonical_request = "\n".join([
+        "GET", canonical_uri, canonical_querystring,
+        canonical_headers, signed_headers, "UNSIGNED-PAYLOAD",
+    ])
+
+    algorithm = "AWS4-HMAC-SHA256"
+    string_to_sign = "\n".join([
+        algorithm, amz_date, credential_scope,
+        hashlib.sha256(canonical_request.encode()).hexdigest(),
+    ])
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    k_date = _sign(f"AWS4{secret_key}".encode(), date_stamp)
+    k_region = _sign(k_date, region)
+    k_service = _sign(k_region, service)
+    k_signing = _sign(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+    return f"https://{host}{canonical_uri}?{canonical_querystring}&X-Amz-Signature={signature}"

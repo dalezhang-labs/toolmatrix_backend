@@ -106,7 +106,7 @@ async def translate_image(
     }
 
     if s3_cfg["access_key"] and s3_cfg["bucket"]:
-        from backend.shared.s3_utils import sign_s3_upload
+        from backend.shared.s3_utils import sign_s3_upload, generate_presigned_url
         import httpx as _httpx
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -128,9 +128,17 @@ async def translate_image(
             s3_resp = await s3_client.put(signed["url"], headers=signed["headers"], content=image_result_bytes)
 
         if s3_resp.status_code in (200, 201):
-            s3_url = f"https://{s3_cfg['bucket']}.s3.{s3_cfg['region']}.amazonaws.com/{s3_key}"
-            logger.info("Translated image uploaded to S3: %s", s3_url)
-            return s3_url
+            # Return presigned URL (private bucket, 24h expiry)
+            presigned = generate_presigned_url(
+                bucket=s3_cfg["bucket"],
+                object_key=s3_key,
+                region=s3_cfg["region"],
+                access_key=s3_cfg["access_key"],
+                secret_key=s3_cfg["secret_key"],
+                expires_in=86400,
+            )
+            logger.info("Translated image uploaded to S3: %s", s3_key)
+            return presigned
 
         logger.warning("S3 upload failed (%d), falling back to local", s3_resp.status_code)
 

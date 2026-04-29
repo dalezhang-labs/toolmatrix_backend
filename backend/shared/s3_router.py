@@ -18,7 +18,7 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from backend.shared.s3_utils import sign_s3_upload
+from backend.shared.s3_utils import sign_s3_upload, generate_presigned_url
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +93,21 @@ async def _do_upload(
         logger.error("S3 upload failed (%d): %s", resp.status_code, resp.text[:300])
         raise HTTPException(502, f"S3 upload failed (HTTP {resp.status_code})")
 
-    url = f"https://{cfg['bucket']}.s3.{cfg['region']}.amazonaws.com/{s3_key}"
-    logger.info("S3 upload OK: %s (%d bytes)", url, file_size)
+    url = generate_presigned_url(
+        bucket=cfg["bucket"],
+        object_key=s3_key,
+        region=cfg["region"],
+        access_key=cfg["access_key"],
+        secret_key=cfg["secret_key"],
+        expires_in=86400,  # 24 hours
+    )
+    # Also keep the raw S3 key for internal use
+    raw_url = f"https://{cfg['bucket']}.s3.{cfg['region']}.amazonaws.com/{s3_key}"
+    logger.info("S3 upload OK: %s (%d bytes)", s3_key, file_size)
 
     return {
         "url": url,
+        "raw_url": raw_url,
         "bucket": cfg["bucket"],
         "key": s3_key,
         "region": cfg["region"],
