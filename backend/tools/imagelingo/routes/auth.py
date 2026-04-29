@@ -66,14 +66,21 @@ async def app_entry(request: Request):
         frontend_url = _env("FRONTEND_URL") or "http://localhost:3000"
         return RedirectResponse(f"{frontend_url}?shop={handle}")
 
-    # Not authorized → redirect to OAuth
+    # Not authorized → break out of iframe to OAuth page
+    # OAuth page is a full Shopline admin page, loading it inside the app iframe
+    # causes nested sidebars. Use a small HTML page with JS to redirect top window.
     app_key = _env("SHOPLINE_APP_KEY")
     redirect_uri = urllib.parse.quote(_env("SHOPLINE_REDIRECT_URI"), safe="")
     auth_url = (
         f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
         f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"
     )
-    return RedirectResponse(auth_url)
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        f'<!DOCTYPE html><html><head><title>Redirecting...</title></head>'
+        f'<body><script>window.top.location.href = "{auth_url}";</script>'
+        f'<p>Redirecting to authorization...</p></body></html>'
+    )
 
 
 # ── Step 2: Verify install request and redirect to OAuth ─────────────────
