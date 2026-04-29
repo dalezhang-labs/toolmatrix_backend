@@ -156,6 +156,15 @@ async def callback(request: Request):
         conn.commit()
 
     frontend_url = _env("FRONTEND_URL") or "http://localhost:3000"
+    app_key = _env("SHOPLINE_APP_KEY")
+
+    # Redirect back to the app inside Shopline admin (embedded app)
+    # This avoids the double-sidebar nesting issue when redirecting to Vercel directly
+    if app_key:
+        shopline_app_url = f"https://{handle}.myshopline.com/admin/apps/{app_key}"
+        return RedirectResponse(shopline_app_url)
+
+    # Fallback for standalone / dev mode
     return RedirectResponse(f"{frontend_url}?shop={handle}")
 
 
