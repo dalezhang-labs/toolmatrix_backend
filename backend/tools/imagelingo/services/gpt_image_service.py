@@ -58,36 +58,47 @@ def _download_and_resize(url: str, max_dim: int = 1024) -> bytes:
         return raw
 
 
-# ── Step 1: OCR + Translate via GPT-4o-mini vision ──────────────────────
+# ── Step 1: OCR + Translate via GPT-4o vision ───────────────────────────
 
 async def _ocr_and_translate(image_bytes: bytes, target_language: str) -> list[dict]:
-    """Use GPT-4o-mini vision to read all text and produce exact translations.
-    Returns list of {"original": "...", "translated": "..."} pairs.
+    """Use GPT-4o vision to read all text with style info and produce exact translations.
+    Returns list of {"original", "translated", "style"} dicts.
     """
     client = _get_client()
     b64 = base64.b64encode(image_bytes).decode()
 
-    prompt = f"""Look at this product image carefully. List every piece of visible text, then translate each one into {target_language}.
+    from PIL import Image
+    img = Image.open(BytesIO(image_bytes))
+    w, h = img.size
 
-Return a JSON object with a "translations" array. Each element:
-{{"original": "exact text as shown", "translated": "accurate {target_language} translation"}}
+    prompt = f"""You are an expert product image localizer. Analyze this {w}×{h} product image.
 
-Rules:
-- Include ALL visible text, even small labels and captions
-- Brand names and product model names should stay in the original language
-- For Chinese translations: use standard Simplified Chinese (简体中文) only — every character must be correct
-- Translations must be natural and grammatically correct
-- Return ONLY the JSON object, nothing else"""
+For EVERY piece of visible text, provide:
+1. The exact original text
+2. An accurate {target_language} translation
+3. A description of the text's visual style (font weight, approximate size, color, case style)
+
+Return a JSON object:
+{{"translations": [
+  {{"original": "EXACT TEXT", "translated": "{target_language} translation", "style": "bold, large, dark gray, uppercase"}}
+]}}
+
+CRITICAL RULES:
+- Include ALL text: headings, subheadings, labels, captions, bullet points
+- Brand names / product model names → keep in original language, set translated = original
+- For Simplified Chinese (简体中文): every single character must be a real, correct Chinese character. Double-check each character.
+- Translations must sound natural to a native {target_language} speaker
+- Style description helps preserve the visual feel during rendering"""
 
     response = await asyncio.to_thread(
         client.chat.completions.create,
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
         ]}],
         response_format={"type": "json_object"},
-        max_tokens=2000,
+        max_tokens=3000,
     )
 
     text = response.choices[0].message.content or "{}"
@@ -100,42 +111,51 @@ Rules:
         logger.error("OCR parse failed: %s", text[:200])
         pairs = []
 
-    logger.info("OCR found %d text pairs for %s", len(pairs), target_language)
+    logger.info("OCR (GPT-4o) found %d text pairs for %s", len(pairs), target_language)
+    for p in pairs:
+        logger.info("  '%s' → '%s' [%s]", p.get("original",""), p.get("translated",""), p.get("style",""))
     return pairs
 
 
 # ── Step 2: Build precise prompt from translation table ──────────────────
 
 def _build_prompt(target_language: str, translation_pairs: list[dict]) -> str:
-    """Build a GPT Image edit prompt with exact text-to-translation mappings."""
+    """Build a GPT Image edit prompt with exact text-to-translation mappings and style hints."""
     if not translation_pairs:
-        # Fallback: generic prompt
         return (
             f"Translate ALL visible text in this image into {target_language}. "
             "Keep the exact same layout, design, colors, and positions. "
             "Only replace text, do not change anything else."
         )
 
-    # Build translation table
+    # Build detailed translation table with style info
     table_lines = []
-    for pair in translation_pairs:
+    for i, pair in enumerate(translation_pairs, 1):
         orig = pair.get("original", "").strip()
         trans = pair.get("translated", "").strip()
-        if orig and trans and orig != trans:
-            table_lines.append(f'  "{orig}" → "{trans}"')
+        style = pair.get("style", "")
+        if orig and trans:
+            if orig == trans:
+                table_lines.append(f'  {i}. "{orig}" → KEEP AS IS (brand name)')
+            else:
+                style_hint = f" [{style}]" if style else ""
+                table_lines.append(f'  {i}. "{orig}" → "{trans}"{style_hint}')
 
     table = "\n".join(table_lines)
 
     return (
-        f"Replace the text in this image using the EXACT translations below. "
-        f"Do NOT change anything else — keep the identical layout, photos, graphics, colors, and positions.\n\n"
-        f"TRANSLATION TABLE:\n{table}\n\n"
-        f"RULES:\n"
-        f"1. Use EXACTLY the translated text shown above — do not improvise or change any character.\n"
-        f"2. Every character must be perfectly correct and clearly readable.\n"
-        f"3. Keep the same font style, size, weight, and color as the original text.\n"
-        f"4. Do NOT move, resize, or reposition any element.\n"
-        f"5. This is a text replacement task only."
+        f"You are a professional product image localizer. Replace ONLY the text in this image.\n\n"
+        f"EXACT TRANSLATION TABLE (use these translations character-by-character, do NOT modify them):\n"
+        f"{table}\n\n"
+        f"MANDATORY RULES — violating any rule means failure:\n"
+        f"1. PIXEL-PERFECT PRESERVATION: The image layout, product photos, graphics, backgrounds, colors, shadows, and all non-text elements must be IDENTICAL to the original. Not similar — identical.\n"
+        f"2. CHARACTER ACCURACY: Copy each translated character EXACTLY from the table above. For CJK characters (Chinese/Japanese/Korean), every stroke must be correct. If unsure about a character, use the exact Unicode character from the table.\n"
+        f"3. FONT STYLE MATCHING: Match the original text's font weight (bold/regular), size, color, letter-spacing, and visual style as closely as possible.\n"
+        f"4. POSITION PRESERVATION: Each translated text must occupy the same position and area as the original text it replaces.\n"
+        f"5. NO ADDITIONS: Do not add any text, watermarks, or elements that are not in the original image.\n"
+        f"6. NO REMOVALS: Do not remove any non-text visual elements.\n"
+        f"7. BRAND NAMES: Items marked 'KEEP AS IS' must remain in their original language.\n\n"
+        f"This is a surgical text replacement operation. The output image should be indistinguishable from the original except for the translated text."
     )
 
 
