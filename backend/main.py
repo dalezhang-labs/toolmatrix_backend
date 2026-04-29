@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

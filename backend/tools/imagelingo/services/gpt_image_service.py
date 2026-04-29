@@ -175,34 +175,24 @@ async def _ocr_and_translate(image_bytes: bytes, target_language: str) -> list[d
     img = Image.open(BytesIO(image_bytes))
     w, h = img.size
 
-    prompt = f"""You are an expert product image localizer. Analyze this {w}×{h} product image.
+    prompt = f"""List every piece of visible text in this product image and translate each to {target_language}.
 
-For EVERY piece of visible text, provide:
-1. The exact original text
-2. An accurate {target_language} translation
-3. A description of the text's visual style (font weight, approximate size, color, case style)
+Return JSON: {{"translations": [{{"original": "exact text", "translated": "{target_language} translation"}}]}}
 
-Return a JSON object:
-{{"translations": [
-  {{"original": "EXACT TEXT", "translated": "{target_language} translation", "style": "bold, large, dark gray, uppercase"}}
-]}}
-
-CRITICAL RULES:
-- Include ALL text: headings, subheadings, labels, captions, bullet points
-- Brand names / product model names → keep in original language, set translated = original
-- For Simplified Chinese (简体中文): every single character must be a real, correct Chinese character. Double-check each character.
-- Translations must sound natural to a native {target_language} speaker
-- Style description helps preserve the visual feel during rendering"""
+Rules:
+- Include ALL text (headings, labels, captions, bullet points)
+- Brand names → keep original, set translated = original
+- Translations must be accurate and natural"""
 
     response = await asyncio.to_thread(
         client.chat.completions.create,
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
         ]}],
         response_format={"type": "json_object"},
-        max_tokens=3000,
+        max_tokens=1500,
     )
 
     text = response.choices[0].message.content or "{}"
