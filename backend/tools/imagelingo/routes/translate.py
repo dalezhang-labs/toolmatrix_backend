@@ -184,16 +184,34 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
     t0 = time.perf_counter()
     _update_job_status(job_id, "processing")
     try:
-        from backend.tools.imagelingo.services.gpt_image_service import translate_image
+        from backend.tools.imagelingo.services.gpt_image_service import translate_image, _upload_to_s3
+
+        # Store (lang, result_bytes, lang_name) for S3 upload after job is marked done
+        completed: list[tuple[str, bytes, str]] = []
 
         for lang in target_languages:
             lang_name = LANG_NAMES.get(lang.upper(), lang)
-            output_url = await translate_image(image_url, lang_name, quality=quality, size=size)
-            _save_translated_image(job_id, lang, output_url)
+            # AI pipeline: returns (bytes, temp_url) immediately after AI processing
+            result_bytes, temp_url = await translate_image(image_url, lang_name, quality=quality, size=size)
+            # Save temp URL → job can be marked done right away
+            _save_translated_image(job_id, lang, temp_url)
+            completed.append((lang, result_bytes, lang_name))
 
+        # Mark done NOW — frontend sees result immediately via temp URL
         _update_job_status(job_id, "done")
         _increment_usage(store_id)
-        logger.info("Pipeline done for job %s in %.2fs", job_id, time.perf_counter() - t0)
+        logger.info("Pipeline done for job %s in %.2fs (temp URLs saved)", job_id, time.perf_counter() - t0)
+
+        # Upload to S3 in background — updates URL to permanent link when done
+        for lang, result_bytes, lang_name in completed:
+            try:
+                s3_url = await _upload_to_s3(result_bytes, lang_name)
+                if s3_url:
+                    _save_translated_image(job_id, lang, s3_url)
+                    logger.info("S3 upload done: job=%s lang=%s", job_id, lang)
+            except Exception as e:
+                logger.warning("S3 upload failed for job %s lang %s: %s", job_id, lang, e)
+
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         logger.error("Pipeline failed for job %s: %s", job_id, error_msg)

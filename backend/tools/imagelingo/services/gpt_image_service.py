@@ -312,52 +312,44 @@ async def translate_image(
     target_language: str,
     quality: str = "high",
     size: str = "1024x1024",
-) -> str:
-    """OCR-assisted image translation pipeline with aspect ratio preservation:
-    1. Download + pad to API-compatible size (no cropping)
-    2. GPT-4o vision → OCR + translate
-    3. Build precise prompt with translation table
-    4. GPT Image edit → render translations
-    5. Crop padding + resize back to original dimensions
-    6. Upload to S3
+) -> tuple[bytes, str]:
+    """OCR-assisted image translation pipeline.
+    Returns (result_bytes, temp_local_url) immediately after AI processing.
+    S3 upload is handled separately by the caller.
     """
     if not AZURE_API_KEY:
         raise ValueError("AZURE_OPENAI_API_KEY is not set")
 
     t_total = time.perf_counter()
-    azure_quality = "high"
+    azure_quality = "high"  # always high
 
-    # Step 1: Download + pad to API size (preserves all content, no crop)
+    # Step 1: Download + validate aspect ratio
     image_bytes, orig_size, api_size = _download_and_prepare(image_url)
     api_size_str = f"{api_size[0]}x{api_size[1]}"
 
-    # Step 2: OCR + Translate (GPT-4o, ~5-10s)
+    # Step 2: OCR + Translate (~3-5s)
     t_ocr = time.perf_counter()
     pairs = await _ocr_and_translate(image_bytes, target_language)
     logger.info("OCR+translate: %.1fs, %d pairs", time.perf_counter() - t_ocr, len(pairs))
 
     # Step 3: Build precise prompt
     prompt = _build_prompt(target_language, pairs)
-    logger.info("Prompt: %d chars, %d pairs", len(prompt), len(pairs))
 
-    # Step 4: GPT Image edit (uses padded image at API size)
+    # Step 4: GPT Image edit (~35-45s)
     result_bytes = await _call_image_edit(image_bytes, prompt, azure_quality, api_size_str)
 
-    # Step 5: Restore original dimensions (crop padding + resize)
+    # Step 5: Restore original dimensions
     if orig_size != api_size:
         result_bytes = _restore_original_size(result_bytes, orig_size, api_size)
 
-    logger.info("Total pipeline: %.1fs (orig=%dx%d)", time.perf_counter() - t_total, orig_size[0], orig_size[1])
+    logger.info("AI pipeline done: %.1fs (orig=%dx%d)", time.perf_counter() - t_total, orig_size[0], orig_size[1])
 
-    # Step 6: Upload to S3
-    s3_url = await _upload_to_s3(result_bytes, target_language)
-    if s3_url:
-        return s3_url
-
-    # Fallback
+    # Save to temp file for immediate serving
     image_id = str(uuid.uuid4())[:12]
     os.makedirs("/tmp/imagelingo_results", exist_ok=True)
     path = f"/tmp/imagelingo_results/{image_id}.png"
     with open(path, "wb") as f:
         f.write(result_bytes)
-    return f"/api/imagelingo/translate/results/{image_id}.png"
+    temp_url = f"/api/imagelingo/translate/results/{image_id}.png"
+
+    return result_bytes, temp_url
