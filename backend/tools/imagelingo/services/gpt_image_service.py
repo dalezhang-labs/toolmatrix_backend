@@ -52,8 +52,8 @@ def _get_client():
     return _client
 
 
-def _download_and_resize(url: str) -> bytes:
-    """Download image, resize to max SOURCE_MAX_DIM px, return PNG bytes."""
+def _download_and_resize(url: str, max_dim: int = 1024) -> bytes:
+    """Download image, resize to max_dim px, compress as JPEG for speed."""
     t0 = time.perf_counter()
     req = urllib.request.Request(url, headers={"User-Agent": "ImageLingo/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -61,15 +61,16 @@ def _download_and_resize(url: str) -> bytes:
     try:
         from PIL import Image
         img = Image.open(BytesIO(raw))
-        if max(img.size) > SOURCE_MAX_DIM:
-            ratio = SOURCE_MAX_DIM / max(img.size)
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
             img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.LANCZOS)
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
         buf = BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        # JPEG is smaller than PNG → faster upload to Azure
+        img.save(buf, format="JPEG", quality=85, optimize=True)
         out = buf.getvalue()
-        logger.info("Download+resize %.2fs (%d→%d bytes)", time.perf_counter() - t0, len(raw), len(out))
+        logger.info("Download+resize %.2fs (%d→%d bytes, max_dim=%d)", time.perf_counter() - t0, len(raw), len(out), max_dim)
         return out
     except Exception:
         return raw
@@ -123,8 +124,10 @@ async def translate_image(
     azure_quality = {"fast": "medium", "low": "medium", "medium": "medium", "high": "high"}.get(quality, "medium")
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
-    # Step 1: Download and resize
-    image_bytes = _download_and_resize(image_url)
+    # Step 1: Download and resize (smaller = faster Azure processing)
+    # medium: 768px max (faster), high: 1024px max (better detail)
+    max_dim = 1024 if quality == "high" else 768
+    image_bytes = _download_and_resize(image_url, max_dim=max_dim)
 
     # Step 2: Call Azure REST API /images/edits with input_fidelity=high
     # (SDK doesn't support input_fidelity, so we use REST directly)
@@ -148,7 +151,7 @@ async def translate_image(
         for attempt in range(max_retries):
             resp = await http_client.post(
                 edit_url,
-                files={"image": ("source.png", image_bytes, "image/png")},
+                files={"image": ("source.jpg", image_bytes, "image/jpeg")},
                 data={
                     "prompt": prompt,
                     "n": "1",
