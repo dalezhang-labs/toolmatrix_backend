@@ -3,6 +3,7 @@ import hmac
 import logging
 import os
 import time
+import urllib.parse
 
 import httpx
 
@@ -21,6 +22,9 @@ def _env(key: str) -> str:
 
 
 def _make_sign(params: dict[str, str]) -> str:
+    """Generate HMAC-SHA256 signature for GET request verification.
+    Shopline GET sign = HMAC-SHA256(sorted query params joined by &, app_secret)
+    """
     message = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
     return hmac.new(
         _env("SHOPLINE_APP_SECRET").encode(),
@@ -30,23 +34,30 @@ def _make_sign(params: dict[str, str]) -> str:
 
 
 def verify_hmac(params: dict) -> bool:
+    """Verify Shopline HMAC-SHA256 signature on incoming GET requests."""
     sign = params.get("sign", "")
     filtered = {k: v for k, v in params.items() if k != "sign"}
     expected = _make_sign(filtered)
     return hmac.compare_digest(expected, sign)
 
 
+# ── Step 2: Verify install request and redirect to OAuth ─────────────────
+
 @router.get("/install")
 async def install(request: Request):
+    """Shopline sends merchants here when they click 'Install'.
+    We verify the signature, then redirect to Shopline OAuth authorization page.
+    """
     params = dict(request.query_params)
     handle = params.get("handle", "")
 
-    if os.getenv("SKIP_HMAC_VERIFY", "").lower() not in ("1", "true"):
-        if not verify_hmac(params):
-            raise HTTPException(status_code=401, detail="Invalid signature")
+    # Verify signature (required for production / app review)
+    if not verify_hmac(params):
+        logger.warning("Install request signature verification failed for handle=%s", handle)
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     app_key = _env("SHOPLINE_APP_KEY")
-    redirect_uri = _env("SHOPLINE_REDIRECT_URI")
+    redirect_uri = urllib.parse.quote(_env("SHOPLINE_REDIRECT_URI"), safe="")
     auth_url = (
         f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
         f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"
@@ -54,9 +65,27 @@ async def install(request: Request):
     return RedirectResponse(auth_url)
 
 
+# ── Step 5-7: Receive code, verify signature, exchange for token ─────────
+
 @router.get("/callback")
 @router.get("/callback/")
-async def callback(code: str, handle: str):
+async def callback(request: Request):
+    """OAuth callback: Shopline redirects here with authorization code.
+    We verify the signature, then exchange code for access token.
+    """
+    params = dict(request.query_params)
+    code = params.get("code", "")
+    handle = params.get("handle", "")
+
+    if not code or not handle:
+        raise HTTPException(status_code=400, detail="Missing code or handle")
+
+    # Step 5: Verify callback signature
+    if not verify_hmac(params):
+        logger.warning("Callback signature verification failed for handle=%s", handle)
+        raise HTTPException(status_code=401, detail="Invalid callback signature")
+
+    # Step 6: Exchange code for access token
     app_key = _env("SHOPLINE_APP_KEY")
     app_secret = _env("SHOPLINE_APP_SECRET")
     timestamp = str(int(time.time() * 1000))
@@ -64,6 +93,7 @@ async def callback(code: str, handle: str):
     import json as _json
     body = {"code": code}
     body_str = _json.dumps(body, separators=(",", ":"))
+    # POST sign = HMAC-SHA256(body_string + timestamp, app_secret)
     source = body_str + timestamp
     sign = hmac.new(
         app_secret.encode("utf-8"),
@@ -83,12 +113,13 @@ async def callback(code: str, handle: str):
         resp = await client.post(token_url, content=body_str, headers=headers)
 
     data = resp.json()
-    logger.warning("Shopline token response: %s", data)
+    logger.info("Shopline token response for %s: code=%s", handle, data.get("code"))
 
     if data.get("code") != 200 or not data.get("data"):
         detail = data.get("message") or data.get("i18nCode") or "Token exchange failed"
         raise HTTPException(status_code=502, detail=detail)
 
+    # Step 7: Store access token
     token_data = data["data"]
     access_token = token_data.get("accessToken")
     expire_time = token_data.get("expireTime")
@@ -109,6 +140,7 @@ async def callback(code: str, handle: str):
     from backend.tools.imagelingo.services.token_store import save_token
     save_token(handle, access_token, expires_at, scopes)
 
+    # Create subscription record if not exists
     from backend.db.connection import get_connection
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -127,6 +159,8 @@ async def callback(code: str, handle: str):
     return RedirectResponse(f"{frontend_url}?shop={handle}")
 
 
+# ── Re-auth helper ───────────────────────────────────────────────────────
+
 @router.get("/reauth-url")
 async def reauth_url(handle: str = ""):
     """Return the OAuth URL for re-authentication when token expires."""
@@ -141,7 +175,7 @@ async def reauth_url(handle: str = ""):
     if not handle:
         raise HTTPException(400, "No store found. Please install the app first.")
     app_key = _env("SHOPLINE_APP_KEY")
-    redirect_uri = _env("SHOPLINE_REDIRECT_URI")
+    redirect_uri = urllib.parse.quote(_env("SHOPLINE_REDIRECT_URI"), safe="")
     auth_url = (
         f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
         f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"

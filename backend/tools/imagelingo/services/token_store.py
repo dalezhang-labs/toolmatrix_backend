@@ -32,7 +32,11 @@ def save_token(handle: str, access_token: str, expires_at: datetime, scopes: str
 
 
 def _refresh_token(handle: str, old_token: str) -> str | None:
-    """Call Shopline token refresh API. Returns new access_token or None."""
+    """Call Shopline token refresh API (Step 8 of OAuth flow).
+    POST https://{handle}.myshopline.com/admin/oauth/token/refresh
+    Header: appkey, timestamp, sign
+    Sign = HMAC-SHA256(body_string + timestamp, app_secret)
+    """
     app_key = os.getenv("SHOPLINE_APP_KEY", "")
     app_secret = os.getenv("SHOPLINE_APP_SECRET", "")
     if not app_key or not app_secret:
@@ -61,10 +65,13 @@ def _refresh_token(handle: str, old_token: str) -> str | None:
         with httpx.Client(timeout=15) as client:
             resp = client.post(refresh_url, content=body_str, headers=headers)
         data = resp.json()
-        logger.info("Token refresh response for %s: code=%s", handle, data.get("code"))
+        logger.info("Token refresh response for %s: code=%s, i18nCode=%s",
+                     handle, data.get("code"), data.get("i18nCode"))
 
         if data.get("code") != 200 or not data.get("data"):
-            logger.warning("Token refresh failed for %s: %s", handle, data.get("message"))
+            i18n = data.get("i18nCode", "")
+            logger.warning("Token refresh failed for %s: %s - %s", handle, i18n, data.get("message"))
+            # STORE_NOT_INSTALL_APP means user needs to re-authorize
             return None
 
         token_data = data["data"]
@@ -82,8 +89,8 @@ def _refresh_token(handle: str, old_token: str) -> str | None:
         else:
             new_expires = datetime.now(timezone.utc) + timedelta(hours=10)
 
-        # Save refreshed token
-        save_token(handle, new_token, new_expires, "")
+        scopes = token_data.get("scope", "")
+        save_token(handle, new_token, new_expires, scopes)
         logger.info("Token refreshed for %s, new expiry: %s", handle, new_expires)
         return new_token
 
@@ -93,7 +100,7 @@ def _refresh_token(handle: str, old_token: str) -> str | None:
 
 
 def get_token(handle: str) -> str | None:
-    """Get a valid access token. Auto-refreshes if expired."""
+    """Get a valid access token. Auto-refreshes if expired (Shopline Step 8)."""
     sql = """
         SELECT access_token, expires_at
         FROM imagelingo.stores
@@ -115,12 +122,12 @@ def get_token(handle: str) -> str | None:
     if expires_at > datetime.now(timezone.utc):
         return access_token
 
-    # Token expired — try to refresh
+    # Token expired — try to refresh (Step 8)
     logger.info("Token expired for %s (expired at %s), attempting refresh...", handle, expires_at)
     new_token = _refresh_token(handle, access_token)
     if new_token:
         return new_token
 
-    # Refresh failed — return None (will trigger 401 → re-auth prompt)
+    # Refresh failed — return None (triggers 401 → re-auth prompt in frontend)
     logger.warning("Token refresh failed for %s, user needs to re-authorize", handle)
     return None
