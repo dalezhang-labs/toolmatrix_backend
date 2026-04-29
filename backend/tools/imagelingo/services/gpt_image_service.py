@@ -121,7 +121,7 @@ async def translate_image(
     if not AZURE_API_KEY:
         raise ValueError("AZURE_OPENAI_API_KEY is not set")
 
-    azure_quality = {"fast": "medium", "low": "medium", "medium": "medium", "high": "high"}.get(quality, "medium")
+    azure_quality = {"fast": "high", "low": "high", "medium": "high", "high": "high"}.get(quality, "high")
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
     # Step 1: Download and resize (smaller = faster Azure processing)
