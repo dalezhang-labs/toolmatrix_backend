@@ -51,14 +51,22 @@ async def entry(request: Request):
     store = store_repo.get_store_by_handle(handle) if handle else None
 
     if store:
-        # Already authorized → redirect to frontend (loaded inside Shopline iframe)
+        # Already authorized → load frontend inside the Shopline iframe
         frontend_url = _env("SHOPLINE_ZD_FRONTEND_URL") or "http://localhost:3000"
-        return RedirectResponse(f"{frontend_url}?handle={handle}")
+        target_url = f"{frontend_url}?handle={handle}"
+        # Use JS redirect so the iframe loads the frontend content directly
+        return HTMLResponse(
+            f'<!DOCTYPE html><html><head><title>Loading...</title></head>'
+            f'<body><script>window.location.href = "{target_url}";</script>'
+            f'<p>Loading app...</p></body></html>'
+        )
 
     # Not authorized → break out of iframe to OAuth page
     # Use JS to redirect top window to avoid nested Shopline admin sidebars
     app_key = _env("SHOPLINE_ZD_APP_KEY")
-    callback_url = str(request.url_for("callback"))
+    # Use fixed callback URL (request.url_for may generate wrong scheme/host behind proxy)
+    base_url = _env("SHOPLINE_ZD_APP_URL") or str(request.base_url).rstrip("/")
+    callback_url = f"{base_url}/api/shopline-zendesk/shopline/callback"
     redirect_uri = urllib.parse.quote(callback_url, safe="")
     auth_url = (
         f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
@@ -91,8 +99,9 @@ async def install(request: Request):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     app_key = _env("SHOPLINE_ZD_APP_KEY")
-    # Build the callback URL from the current request base
-    callback_url = str(request.url_for("callback"))
+    # Use fixed callback URL (request.url_for may generate wrong scheme/host behind proxy)
+    base_url = _env("SHOPLINE_ZD_APP_URL") or str(request.base_url).rstrip("/")
+    callback_url = f"{base_url}/api/shopline-zendesk/shopline/callback"
     redirect_uri = urllib.parse.quote(callback_url, safe="")
 
     auth_url = (
