@@ -74,7 +74,11 @@ async def entry(request: Request):
     )
     return HTMLResponse(
         f'<!DOCTYPE html><html><head><title>Redirecting...</title></head>'
-        f'<body><script>window.top.location.href = "{auth_url}";</script>'
+        f'<body><script>'
+        f'try {{ window.top.location.href = "{auth_url}"; }}'
+        f' catch(e) {{ try {{ window.parent.location.href = "{auth_url}"; }}'
+        f' catch(e2) {{ window.location.href = "{auth_url}"; }} }}'
+        f'</script>'
         f'<p>Redirecting to authorization...</p></body></html>'
     )
 
