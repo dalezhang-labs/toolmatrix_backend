@@ -186,5 +186,6 @@ async def callback(request: Request):
     # This time /entry finds a valid token and loads the frontend inside the iframe.
     # This avoids iframe nesting issues that occur when redirecting directly to Vercel.
     return RedirectResponse(
-        f"https://{handle}.myshopline.com/admin/apps/detail/{_env('SHOPLINE_ZD_APP_KEY')}"
+        f"https://{handle}.myshopline.com/admin/apps/detail/{_env('SHOPLINE_ZD_APP_KEY')}",
+        status_code=302,
     )
