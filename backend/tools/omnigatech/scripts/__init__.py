@@ -1,0 +1,1 @@
+# OmnigaTech scripts package

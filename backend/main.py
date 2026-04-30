@@ -24,6 +24,16 @@ from backend.tools.shopline_zendesk.routes.zendesk.app.middleware.auth import (
 from backend.tools.shopline_zendesk.routes.zendesk.app.middleware.tenant import (
     TenantMiddleware as SzV2TenantMiddleware,
 )
+from backend.tools.omnigatech.mounts import include_omnigatech_routes
+from backend.tools.omnigatech.database import (
+    create_omnigatech_tables,
+)
+from backend.tools.omnigatech.middleware.auth import (
+    OmnigaTechAuthMiddleware,
+)
+from backend.tools.omnigatech.middleware.tenant import (
+    OmnigaTechTenantMiddleware,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +46,8 @@ app.add_middleware(
         "http://localhost:5173",
         os.getenv("FRONTEND_URL", ""),
         os.getenv("SHOPLINE_ZD_FRONTEND_URL", ""),
+        "https://zendesk.omnigatech.com",
+        "https://stripepage-shoplinebyomnigatech.vercel.app",
     ],
     allow_origin_regex=(
         r"^https://.*\.vercel\.app$|"
@@ -46,6 +58,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -- Middleware: OmnigaTech (must be added before SZ so it's evaluated first)
+app.add_middleware(OmnigaTechTenantMiddleware)
+app.add_middleware(OmnigaTechAuthMiddleware)
 
 # -- Middleware: Shopline-Zendesk v2
 # Tenant middleware only applies to Shopline-Zendesk v2 endpoints by path filter.
@@ -73,6 +89,9 @@ app.include_router(s3_router, prefix="/api/shared/s3")
 include_shopline_frontend_routes(app)
 include_zaf_frontend_routes(app)
 
+# -- Tool: OmnigaTech
+include_omnigatech_routes(app)
+
 @app.on_event("startup")
 async def _startup_env_check():
     logger.info("DaleToolMatrix starting up...")
@@ -81,6 +100,12 @@ async def _startup_env_check():
         logger.info("Shopline-Zendesk v2 tables are ready")
     except Exception:
         logger.exception("Failed to initialize Shopline-Zendesk v2 tables")
+
+    try:
+        await create_omnigatech_tables()
+        logger.info("OmnigaTech tables are ready")
+    except Exception:
+        logger.exception("Failed to initialize OmnigaTech tables")
 
 
 @app.get("/health")
