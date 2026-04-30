@@ -14,6 +14,7 @@ from backend.shared.s3_router import router as s3_router
 from backend.tools.shopline_zendesk.routes.shopline import install as sz_install
 from backend.tools.shopline_zendesk.routes.shopline import binding as sz_binding
 from backend.tools.shopline_zendesk.routes.shopline import session as sz_session
+from backend.tools.shopline_zendesk.routes.shopline import webhook as sz_webhook
 from backend.tools.shopline_zendesk.routes.zendesk import customer as sz_customer
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,8 @@ app.include_router(s3_router, prefix="/api/shared/s3")
 app.include_router(sz_install.router,  prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_binding.router,  prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_session.router,  prefix="/api/shopline-zendesk/shopline")
+app.include_router(sz_webhook.router,  prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_customer.router, prefix="/api/shopline-zendesk/zendesk")
-
 
 @app.on_event("startup")
 async def _startup_env_check():
