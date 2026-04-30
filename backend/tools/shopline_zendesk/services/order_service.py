@@ -164,7 +164,7 @@ async def get_customer_orders(
         "Content-Type": "application/json; charset=utf-8",
     }
 
-    params: dict[str, str] = {"limit": str(limit)}
+    params: dict[str, str] = {"limit": str(limit), "status": "any"}
     if page_info:
         params["page_info"] = page_info
 
