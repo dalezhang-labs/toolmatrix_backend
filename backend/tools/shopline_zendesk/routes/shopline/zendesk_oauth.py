@@ -10,6 +10,7 @@ import base64
 import json
 import logging
 import os
+import urllib.parse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -66,7 +67,7 @@ async def zendesk_authorize(
     auth_url = (
         f"https://{subdomain}.zendesk.com/oauth/authorizations/new"
         f"?response_type=code"
-        f"&redirect_uri={redirect_uri}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
         f"&client_id={client_id}"
         f"&scope=read"
         f"&state={state}"
