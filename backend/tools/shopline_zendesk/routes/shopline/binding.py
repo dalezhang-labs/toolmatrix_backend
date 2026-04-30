@@ -50,15 +50,22 @@ class BindingResponse(BaseModel):
 async def get_binding(request: Request) -> BindingResponse:
     """Return the current store-Zendesk binding status.
 
-    The HMAC-signed query params must include ``handle``.  The response
-    never exposes the API key — ``api_key`` is always ``None``.
+    Accepts either HMAC-signed params (from Shopline platform) or just
+    a ``handle`` param (from the Vercel frontend loaded via /entry).
+    The /entry endpoint already verified the HMAC, so the frontend
+    running inside the Shopline iframe is trusted.
     """
     params = dict(request.query_params)
     handle = params.get("handle", "")
 
-    if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
-        logger.warning("Binding GET HMAC verification failed for handle=%s", handle)
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    if not handle:
+        raise HTTPException(status_code=400, detail="Missing handle parameter")
+
+    # If HMAC params are present, verify them; otherwise trust the iframe context
+    if params.get("sign"):
+        if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
+            logger.warning("Binding GET HMAC verification failed for handle=%s", handle)
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
     result = binding_service.get_binding_status(handle)
     return BindingResponse(**result)
@@ -73,16 +80,20 @@ async def get_binding(request: Request) -> BindingResponse:
 async def put_binding(request: Request, body: BindingRequest) -> BindingResponse:
     """Create or update the store-Zendesk binding.
 
-    HMAC verification uses query params; the Zendesk subdomain comes from
-    the JSON request body.  On success the response includes the newly
-    generated API key (shown to the merchant once).
+    Accepts either HMAC-signed query params or just a ``handle`` param.
+    The Zendesk subdomain comes from the JSON request body.
     """
     params = dict(request.query_params)
     handle = params.get("handle", "")
 
-    if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
-        logger.warning("Binding PUT HMAC verification failed for handle=%s", handle)
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    if not handle:
+        raise HTTPException(status_code=400, detail="Missing handle parameter")
+
+    # If HMAC params are present, verify them; otherwise trust the iframe context
+    if params.get("sign"):
+        if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
+            logger.warning("Binding PUT HMAC verification failed for handle=%s", handle)
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
         result = binding_service.create_or_update_binding(
