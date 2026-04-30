@@ -36,7 +36,12 @@ class InvalidApiKeyError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def create_or_update_binding(handle: str, zendesk_subdomain: str) -> dict:
+def create_or_update_binding(
+    handle: str,
+    zendesk_subdomain: str,
+    zendesk_admin_email: str | None = None,
+    zendesk_api_token: str | None = None,
+) -> dict:
     """Create or update a store-Zendesk binding.
 
     Steps:
@@ -57,6 +62,8 @@ def create_or_update_binding(handle: str, zendesk_subdomain: str) -> dict:
         store_id=store["id"],
         zendesk_subdomain=zendesk_subdomain,
         api_key=api_key,
+        zendesk_admin_email=zendesk_admin_email,
+        zendesk_api_token=zendesk_api_token,
     )
 
     # Attach the handle for convenience (the repo row doesn't include it).
@@ -80,6 +87,7 @@ def get_binding_status(handle: str) -> dict:
             "handle": handle,
             "zendesk_subdomain": None,
             "api_key": None,
+            "has_zendesk_credentials": False,
         }
 
     # Strip the API key from the response.

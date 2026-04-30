@@ -43,6 +43,15 @@ class CustomerLookupResponse(BaseModel):
     total: int
 
 
+class CustomerListResponse(BaseModel):
+    """Response wrapper for paginated customer list."""
+
+    customers: list[CustomerInfo]
+    total: int
+    page: int
+    limit: int
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -166,3 +175,65 @@ async def lookup_customer(
 
     customers = [_map_customer(c) for c in raw_customers]
     return CustomerLookupResponse(customers=customers, total=len(customers))
+
+
+async def list_customers(
+    handle: str,
+    access_token: str,
+    expires_at: datetime,
+    page: int = 1,
+    limit: int = 20,
+    search: str | None = None,
+) -> CustomerListResponse:
+    """Return a paginated list of customers from the Shopline Open API.
+
+    Uses the ``/customers/v2/search.json`` endpoint.  When *search* is
+    provided it is forwarded as ``query_param`` for fuzzy matching on
+    email/phone/name.
+
+    Args:
+        handle: Shopline store handle (e.g. ``"mystore"``).
+        access_token: Current Shopline access token.
+        expires_at: Token expiry timestamp.
+        page: 1-based page number (used for frontend display only;
+            Shopline API uses offset-style via ``limit``).
+        limit: Number of customers per page (1–100).
+        search: Optional search query forwarded to Shopline.
+
+    Returns:
+        A ``CustomerListResponse`` with the customer list and pagination
+        metadata.
+
+    Raises:
+        httpx.HTTPStatusError: On non-2xx responses from Shopline.
+        httpx.TimeoutException: If the request exceeds the timeout.
+    """
+    token = await _ensure_fresh_token(handle, access_token, expires_at)
+
+    url = (
+        f"https://{handle}.myshopline.com/admin/openapi/"
+        f"{_API_VERSION}/customers/v2/search.json"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+
+    params: dict[str, str] = {"limit": str(limit)}
+    if search:
+        params["query_param"] = search
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.get(url, params=params, headers=headers)
+        resp.raise_for_status()
+
+    data = resp.json()
+    raw_customers: list[dict] = data.get("customers", [])
+
+    customers = [_map_customer(c) for c in raw_customers]
+    return CustomerListResponse(
+        customers=customers,
+        total=len(customers),
+        page=page,
+        limit=limit,
+    )
