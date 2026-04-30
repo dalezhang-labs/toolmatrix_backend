@@ -1,0 +1,26 @@
+{
+  "Basic": {
+    "product_id": "prod_SrmBj1MWkryn2N",
+    "monthly_price_id": "price_1Rw33pFQ0vfG33EQM9esjU9G",
+    "yearly_price_id": "price_1Rw3DmFQ0vfG33EQ8Klk96lj",
+    "monthly_amount": 700,
+    "yearly_amount": 7560,
+    "description": "Basic Plan - Perfect for individuals and small teams"
+  },
+  "Professional": {
+    "product_id": "prod_SrlTpwGnBpXh4X",
+    "monthly_price_id": "price_1Rw33pFQ0vfG33EQPoD5MjWY",
+    "yearly_price_id": "price_1Rw3DmFQ0vfG33EQ4PsnbO9E",
+    "monthly_amount": 1700,
+    "yearly_amount": 18360,
+    "description": "Professional Plan - For growing businesses"
+  },
+  "Enterprise": {
+    "product_id": "prod_SrYLdR2Vnth30a",
+    "monthly_price_id": "price_1RvpEiFQ0vfG33EQWyP6lc0Z",
+    "yearly_price_id": "price_1Rw3DmFQ0vfG33EQvvuMv9Oi",
+    "monthly_amount": 69900,
+    "yearly_amount": 755100,
+    "description": "Enterprise Plan - For large organizations with dedicated support"
+  }
+}

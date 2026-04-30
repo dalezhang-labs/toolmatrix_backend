@@ -11,12 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.tools.imagelingo.routes import auth, translate, webhook, products
 from backend.tools.fitness import routes as fitness_routes
 from backend.shared.s3_router import router as s3_router
-from backend.tools.shopline_zendesk.routes.shopline import install as sz_install
-from backend.tools.shopline_zendesk.routes.shopline import binding as sz_binding
-from backend.tools.shopline_zendesk.routes.shopline import session as sz_session
-from backend.tools.shopline_zendesk.routes.shopline import webhook as sz_webhook
-from backend.tools.shopline_zendesk.routes.shopline import customers as sz_customers
-from backend.tools.shopline_zendesk.routes.zendesk import customer as sz_customer
+from backend.tools.shopline_zendesk.routes import (
+    include_shopline_frontend_routes,
+    include_zaf_frontend_routes,
+)
+from backend.tools.shopline_zendesk.routes.zendesk.app.database import (
+    create_tables as sz_v2_create_tables,
+)
+from backend.tools.shopline_zendesk.routes.zendesk.app.middleware.auth import (
+    AuthMiddleware as SzV2AuthMiddleware,
+)
+from backend.tools.shopline_zendesk.routes.zendesk.app.middleware.tenant import (
+    TenantMiddleware as SzV2TenantMiddleware,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +37,20 @@ app.add_middleware(
         os.getenv("FRONTEND_URL", ""),
         os.getenv("SHOPLINE_ZD_FRONTEND_URL", ""),
     ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=(
+        r"^https://.*\.vercel\.app$|"
+        r"^https://.*\.zendesk\.com$|"
+        r"^https://.*\.apps\.zdusercontent\.com$|"
+        r"^http://localhost:\d+$"
+    ),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -- Middleware: Shopline-Zendesk v2
+# Tenant middleware only applies to Shopline-Zendesk v2 endpoints by path filter.
+app.add_middleware(SzV2TenantMiddleware)
+app.add_middleware(SzV2AuthMiddleware)
 
 # -- Tool: ImageLingo
 app.include_router(auth.router, prefix="/api/imagelingo/auth")
@@ -50,16 +67,20 @@ app.include_router(s3_router, prefix="/api/shared/s3")
 # app.include_router(tool2.router, prefix="/api/tool2")
 
 # -- Tool: Shopline-Zendesk
-app.include_router(sz_install.router,  prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_binding.router,  prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_session.router,  prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_webhook.router,    prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_customers.router,     prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_customer.router,      prefix="/api/shopline-zendesk/zendesk")
+# Route registration is grouped by frontend ownership for clarity:
+# 1) Shopline App frontend
+# 2) Zendesk ZAF frontend (legacy + v2)
+include_shopline_frontend_routes(app)
+include_zaf_frontend_routes(app)
 
 @app.on_event("startup")
 async def _startup_env_check():
     logger.info("DaleToolMatrix starting up...")
+    try:
+        await sz_v2_create_tables()
+        logger.info("Shopline-Zendesk v2 tables are ready")
+    except Exception:
+        logger.exception("Failed to initialize Shopline-Zendesk v2 tables")
 
 
 @app.get("/health")
