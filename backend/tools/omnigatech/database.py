@@ -27,7 +27,7 @@ omnigatech_engine = create_async_engine(
     async_db_url,
     echo=omnigatech_settings.debug,
     future=True,
-    connect_args={"options": "-c search_path=omnigatech,public"},
+    connect_args={"server_settings": {"search_path": "omnigatech,public"}},
 )
 
 # ---------------------------------------------------------------------------
