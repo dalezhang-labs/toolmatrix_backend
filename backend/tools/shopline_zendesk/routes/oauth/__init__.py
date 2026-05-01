@@ -309,7 +309,8 @@ async def oauth_callback(request: Request):
     params = dict(request.query_params)
     handle = params.get("handle", "")
     code = params.get("code", "")
-    state = params.get("state", "")
+    # State is passed via Shopline's customField parameter (not in redirectUri)
+    state = params.get("customField", "") or params.get("state", "")
 
     # --- HMAC signature verification ---
     app_secret = _env("SHOPLINE_ZD_APP_SECRET")

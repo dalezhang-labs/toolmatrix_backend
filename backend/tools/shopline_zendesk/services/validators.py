@@ -111,16 +111,13 @@ def build_shopline_auth_url(
     """
     validated_handle = validate_handle(handle)
 
-    # Append state to redirect_uri as a query parameter.
-    separator = "&" if "?" in redirect_uri else "?"
-    redirect_with_state = f"{redirect_uri}{separator}state={quote(state, safe='')}"
-
     params = urlencode(
         {
             "appKey": app_key,
             "responseType": "code",
             "scope": scopes,
-            "redirectUri": redirect_with_state,
+            "redirectUri": redirect_uri,
+            "customField": state,
         },
         safe="",  # encode everything
     )
