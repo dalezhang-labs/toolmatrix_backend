@@ -31,16 +31,17 @@ omnigatech_engine = create_async_engine(
 )
 
 # ---------------------------------------------------------------------------
-# Sync engine (for middleware)
+# Sync engine (for middleware) — psycopg2 uses 'options' in the DSN, not connect_args
 # ---------------------------------------------------------------------------
-_sync_connect_args: dict = {"options": "-c search_path=omnigatech,public"}
-if "sslmode=require" in _raw_url:
-    _sync_connect_args["sslmode"] = "require"
+_sync_url_with_schema = sync_db_url
+if "?" in _sync_url_with_schema:
+    _sync_url_with_schema += "&options=-c%20search_path%3Domnigatech%2Cpublic"
+else:
+    _sync_url_with_schema += "?options=-c%20search_path%3Domnigatech%2Cpublic"
 
 omnigatech_sync_engine = create_engine(
-    sync_db_url,
+    _sync_url_with_schema,
     echo=omnigatech_settings.debug,
-    connect_args=_sync_connect_args,
 )
 
 # ---------------------------------------------------------------------------
