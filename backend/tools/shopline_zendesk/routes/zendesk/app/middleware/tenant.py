@@ -35,9 +35,7 @@ _PREFIX_SKIP = (
     "/api/subscriptions/tiers",
     "/api/users/",
     "/api/stripe/",
-    "/api/tenants/by-subdomain/",
-    "/api/tenants/validate-shopline-config",
-    "/api/tenants/setup-config",
+    "/api/tenants/",
 )
 
 
@@ -86,10 +84,6 @@ class TenantMiddleware(BaseHTTPMiddleware):
             request.url.path in _EXACT_SKIP
             or any(request.url.path.startswith(p) for p in _PREFIX_SKIP)
         )
-        # /api/tenants/config/{subdomain} must NOT be skipped (ZAF needs it)
-        if request.url.path.startswith("/api/tenants/config/"):
-            should_skip = False
-
         if should_skip:
             return await call_next(request)
 
