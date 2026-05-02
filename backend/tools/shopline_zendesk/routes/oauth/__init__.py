@@ -179,7 +179,18 @@ def _render_success_html(zendesk_subdomain: str) -> HTMLResponse:
       }}
 
       // Auto-close after a short delay
-      setTimeout(function() {{ window.close(); }}, 2000);
+      setTimeout(function() {{
+        window.close();
+        // If window.close() didn't work (e.g. inside an iframe or
+        // browser blocked it), show a manual-close hint after 3s.
+        setTimeout(function() {{
+          var card = document.querySelector('.card');
+          if (card) {{
+            card.querySelector('p').textContent =
+              'Authorization complete. You can close this tab and return to Zendesk.';
+          }}
+        }}, 1000);
+      }}, 2000);
     }})();
   </script>
 </body>

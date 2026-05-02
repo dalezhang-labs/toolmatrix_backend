@@ -248,8 +248,19 @@ _COLUMNS_WITH_HANDLE = _COLUMNS + ("handle",)
 
 
 def _has_zendesk_credentials(row_dict: dict) -> bool:
-    """Return True if Zendesk admin email AND API token are both set."""
-    return bool(row_dict.get("zendesk_admin_email")) and bool(row_dict.get("zendesk_api_token"))
+    """Return True if the binding has usable credentials.
+
+    A binding is considered to have credentials when either:
+    - Legacy API-key flow: zendesk_admin_email AND zendesk_api_token are set, OR
+    - OAuth flow: the binding simply exists (store has a valid access_token).
+
+    Since a binding row is only created after a successful OAuth exchange or
+    manual setup, its mere existence means the store is connected.
+    """
+    has_legacy = bool(row_dict.get("zendesk_admin_email")) and bool(row_dict.get("zendesk_api_token"))
+    # If the binding exists (has a store_id), the OAuth flow completed successfully
+    has_oauth = bool(row_dict.get("store_id"))
+    return has_legacy or has_oauth
 
 
 def _row_to_dict(row: tuple) -> dict:
