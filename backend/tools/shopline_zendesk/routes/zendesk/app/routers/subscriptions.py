@@ -3,11 +3,13 @@ from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.base import ApiResponse, SubscriptionTier
 from ..database import get_db
-from ..models.base import SubscriptionModel, TenantModel
+from ..models.base import SubscriptionModel
 from sqlalchemy import select
 import logging
 from datetime import datetime, timedelta
 import uuid
+
+from backend.tools.shopline_zendesk.db import binding_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,22 +81,20 @@ async def get_current_subscription(
                 detail="Zendesk subdomain not found"
             )
         
-        # 查询租户
-        tenant_result = await db.execute(
-            select(TenantModel).where(TenantModel.zendesk_subdomain == zendesk_subdomain)
-        )
-        tenant = tenant_result.scalar_one_or_none()
-        
-        if not tenant:
+        # 查询租户 — use binding to resolve tenant identity
+        binding = binding_repo.get_binding_by_subdomain(zendesk_subdomain)
+        if not binding:
             raise HTTPException(
                 status_code=404,
                 detail="Tenant not found"
             )
         
+        tenant_id = str(binding["store_id"])
+        
         # 查询当前活跃的订阅
         subscription_result = await db.execute(
             select(SubscriptionModel).where(
-                SubscriptionModel.tenant_id == tenant.id,
+                SubscriptionModel.tenant_id == tenant_id,
                 SubscriptionModel.status == "active"
             )
         )
@@ -148,16 +148,14 @@ async def create_subscription(
             )
         
         # 查询租户
-        tenant_result = await db.execute(
-            select(TenantModel).where(TenantModel.zendesk_subdomain == zendesk_subdomain)
-        )
-        tenant = tenant_result.scalar_one_or_none()
-        
-        if not tenant:
+        binding = binding_repo.get_binding_by_subdomain(zendesk_subdomain)
+        if not binding:
             raise HTTPException(
                 status_code=404,
                 detail="Tenant not found"
             )
+        
+        tenant_id = str(binding["store_id"])
         
         # 计算价格
         plan_config = SUBSCRIPTION_PLANS.get(plan_type)
@@ -172,7 +170,7 @@ async def create_subscription(
         # 创建订阅
         subscription = SubscriptionModel(
             id=str(uuid.uuid4()),
-            tenant_id=tenant.id,
+            tenant_id=tenant_id,
             plan_type=plan_type.value,
             agent_count=agent_count,
             monthly_price=monthly_price,

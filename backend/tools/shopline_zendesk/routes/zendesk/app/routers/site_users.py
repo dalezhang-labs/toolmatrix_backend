@@ -4,7 +4,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from ..models.base import ApiResponse
 from ..models.user import SiteUserModel, UserStripeSubscription
-from ..models.base import TenantModel
 from ..database import get_db
 from pydantic import BaseModel, EmailStr
 import logging
@@ -220,7 +219,7 @@ async def update_user(
 @router.post("/{user_id}/bind-tenant", response_model=ApiResponse)
 async def bind_tenant_to_user(
     user_id: str,
-    binding: TenantBinding,
+    binding_data: TenantBinding,
     db: AsyncSession = Depends(get_db)
 ):
     """绑定 Zendesk 租户到用户"""
@@ -234,21 +233,19 @@ async def bind_tenant_to_user(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # 查找或创建租户
-        tenant_result = await db.execute(
-            select(TenantModel).where(TenantModel.zendesk_subdomain == binding.zendesk_subdomain)
-        )
-        tenant = tenant_result.scalar_one_or_none()
+        # 查找或创建租户 — look up binding by subdomain
+        from backend.tools.shopline_zendesk.db import binding_repo
+        store_binding = binding_repo.get_binding_by_subdomain(binding_data.zendesk_subdomain)
         
-        if not tenant:
-            # 创建新租户
-            tenant = TenantModel(
-                id=str(uuid.uuid4()),
-                zendesk_subdomain=binding.zendesk_subdomain,
-                is_active=True
+        if not store_binding:
+            # No binding exists for this subdomain yet — cannot bind
+            return ApiResponse(
+                success=False,
+                error=f"No Shopline store is linked to {binding_data.zendesk_subdomain}. "
+                      f"Please connect a Shopline store first."
             )
-            db.add(tenant)
-            await db.flush()  # 确保tenant被插入到数据库
+        
+        tenant_id = str(store_binding["store_id"])
         
         # 使用SQL直接插入关联表，避免ORM懒加载问题
         from sqlalchemy import text
@@ -256,7 +253,7 @@ async def bind_tenant_to_user(
         # 检查是否已经存在关联
         existing_result = await db.execute(
             text("SELECT 1 FROM user_tenants WHERE user_id = :user_id AND tenant_id = :tenant_id"),
-            {"user_id": user.id, "tenant_id": tenant.id}
+            {"user_id": user.id, "tenant_id": tenant_id}
         )
         existing = existing_result.scalar()
         
@@ -264,7 +261,7 @@ async def bind_tenant_to_user(
             # 插入关联
             await db.execute(
                 text("INSERT INTO user_tenants (user_id, tenant_id, is_owner) VALUES (:user_id, :tenant_id, :is_owner)"),
-                {"user_id": user.id, "tenant_id": tenant.id, "is_owner": binding.is_owner}
+                {"user_id": user.id, "tenant_id": tenant_id, "is_owner": binding_data.is_owner}
             )
         
         await db.commit()
@@ -301,9 +298,10 @@ async def get_user_tenants(
         from sqlalchemy import text
         tenant_result = await db.execute(
             text("""
-                SELECT t.id, t.zendesk_subdomain, t.is_active, ut.is_owner
-                FROM tenants t
-                JOIN user_tenants ut ON t.id = ut.tenant_id
+                SELECT s.id, b.zendesk_subdomain, ut.is_owner
+                FROM shopline_zendesk.stores s
+                JOIN shopline_zendesk.bindings b ON b.store_id = s.id
+                JOIN user_tenants ut ON ut.tenant_id = CAST(s.id AS text)
                 WHERE ut.user_id = :user_id
             """),
             {"user_id": user_id}
@@ -312,13 +310,12 @@ async def get_user_tenants(
         # 获取租户信息
         tenants_data = []
         for row in tenant_result:
-            # 暂时不查询订阅信息，避免复杂的关联查询
             tenants_data.append({
-                "id": row.id,
+                "id": str(row.id),
                 "zendesk_subdomain": row.zendesk_subdomain,
-                "is_active": row.is_active,
+                "is_active": True,
                 "is_owner": row.is_owner,
-                "has_active_subscription": False,  # TODO: 查询订阅状态
+                "has_active_subscription": False,
                 "subscription": None
             })
         

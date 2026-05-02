@@ -11,11 +11,12 @@ CREATE TABLE IF NOT EXISTS shopline_zendesk.stores (
   updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Store-Zendesk bindings: one row per store (one-to-one)
+-- Store-Zendesk bindings: one store → one Zendesk subdomain (store_id UNIQUE).
+-- A Zendesk subdomain may have multiple stores bound to it.
 CREATE TABLE IF NOT EXISTS shopline_zendesk.bindings (
   id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   store_id          UUID        NOT NULL REFERENCES shopline_zendesk.stores(id),
-  zendesk_subdomain TEXT        UNIQUE NOT NULL,
+  zendesk_subdomain TEXT        NOT NULL,
   api_key           TEXT        NOT NULL,
   created_at        TIMESTAMPTZ DEFAULT NOW(),
   updated_at        TIMESTAMPTZ DEFAULT NOW()
@@ -23,3 +24,6 @@ CREATE TABLE IF NOT EXISTS shopline_zendesk.bindings (
 
 CREATE UNIQUE INDEX IF NOT EXISTS bindings_store_id_idx
   ON shopline_zendesk.bindings(store_id);
+
+CREATE INDEX IF NOT EXISTS bindings_zendesk_subdomain_idx
+  ON shopline_zendesk.bindings(zendesk_subdomain);
