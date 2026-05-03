@@ -62,7 +62,7 @@ class WebhookEvent(BaseModel):
 async def get_user_by_email(email: str, db: AsyncSession = Depends(get_db)):
     """Get user by email address"""
     try:
-        query = text("SELECT * FROM users WHERE email = :email AND is_active = true")
+        query = text("SELECT * FROM omnigatech.site_users WHERE email = :email AND is_active = true")
         result = await db.execute(query, {"email": email})
         user = result.first()
         
@@ -99,7 +99,7 @@ async def create_user(user_data: UserCreate, db: AsyncSession = Depends(get_db))
     try:
         user_id = str(uuid.uuid4())
         query = text("""
-            INSERT INTO users (id, email, name, google_id, image_url, stripe_customer_id, created_at, updated_at, is_active)
+            INSERT INTO omnigatech.site_users (id, email, name, google_id, image_url, stripe_customer_id, created_at, updated_at, is_active)
             VALUES (:id, :email, :name, :google_id, :image_url, :stripe_customer_id, NOW(), NOW(), true)
             RETURNING *
         """)
@@ -178,7 +178,7 @@ async def get_subscription_plans(db: AsyncSession = Depends(get_db)):
         query = text("""
             SELECT id, stripe_price_id, stripe_product_id, name, description, 
                    amount, currency, interval, interval_count, trial_period_days
-            FROM subscription_plans 
+            FROM omnigatech.subscription_plans 
             WHERE is_active = true 
             ORDER BY amount ASC
         """)
@@ -216,7 +216,7 @@ async def get_user_subscriptions(user_id: str, db: AsyncSession = Depends(get_db
     try:
         query = text("""
             SELECT s.*, p.name as plan_name, p.description as plan_description
-            FROM user_subscriptions s
+            FROM omnigatech.user_subscriptions s
             LEFT JOIN subscription_plans p ON s.plan_id = p.id
             WHERE s.user_id = :user_id
             ORDER BY s.created_at DESC
@@ -256,7 +256,7 @@ async def create_subscription(sub_data: SubscriptionCreate, db: AsyncSession = D
     try:
         sub_id = str(uuid.uuid4())
         query = text("""
-            INSERT INTO user_subscriptions (
+            INSERT INTO omnigatech.user_subscriptions (
                 id, user_id, stripe_subscription_id, stripe_customer_id, plan_id,
                 status, current_period_start, current_period_end, amount, currency,
                 interval_type, created_at, updated_at
@@ -322,7 +322,7 @@ async def update_subscription(
         if updates:
             updates.append("updated_at = NOW()")
             query = text(f"""
-                UPDATE user_subscriptions 
+                UPDATE omnigatech.user_subscriptions 
                 SET {', '.join(updates)} 
                 WHERE stripe_subscription_id = :stripe_subscription_id
             """)
@@ -347,7 +347,7 @@ async def record_payment(payment_data: PaymentRecord, db: AsyncSession = Depends
     try:
         payment_id = str(uuid.uuid4())
         query = text("""
-            INSERT INTO payment_history (
+            INSERT INTO omnigatech.payment_history (
                 id, user_id, subscription_id, stripe_invoice_id, stripe_payment_intent_id,
                 amount, currency, status, payment_method_type, created_at
             ) VALUES (
@@ -390,7 +390,7 @@ async def record_webhook_event(event_data: WebhookEvent, db: AsyncSession = Depe
         event_id = str(uuid.uuid4())
         
         # Check if event already exists
-        check_query = text("SELECT id FROM webhook_events WHERE stripe_event_id = :stripe_event_id")
+        check_query = text("SELECT id FROM omnigatech.webhook_events WHERE stripe_event_id = :stripe_event_id")
         existing = await db.execute(check_query, {"stripe_event_id": event_data.stripe_event_id})
         
         if existing.first():
@@ -401,7 +401,7 @@ async def record_webhook_event(event_data: WebhookEvent, db: AsyncSession = Depe
         
         # Insert new event
         query = text("""
-            INSERT INTO webhook_events (
+            INSERT INTO omnigatech.webhook_events (
                 id, stripe_event_id, event_type, event_data, created_at, processed
             ) VALUES (
                 :id, :stripe_event_id, :event_type, CAST(:event_data AS jsonb), NOW(), false
@@ -786,7 +786,7 @@ async def handle_stripe_webhook(request: Request, db: AsyncSession = Depends(get
         
         # Record webhook event (check for duplicates)
         event_id = str(uuid.uuid4())
-        check_query = text("SELECT id FROM webhook_events WHERE stripe_event_id = :stripe_event_id")
+        check_query = text("SELECT id FROM omnigatech.webhook_events WHERE stripe_event_id = :stripe_event_id")
         existing = await db.execute(check_query, {"stripe_event_id": event['id']})
         
         if existing.first():
@@ -798,7 +798,7 @@ async def handle_stripe_webhook(request: Request, db: AsyncSession = Depends(get
         
         # Insert new event
         insert_query = text("""
-            INSERT INTO webhook_events (
+            INSERT INTO omnigatech.webhook_events (
                 id, stripe_event_id, event_type, event_data, created_at, processed
             ) VALUES (
                 :id, :stripe_event_id, :event_type, CAST(:event_data AS jsonb), NOW(), false
@@ -885,7 +885,7 @@ async def handle_subscription_webhook(event: dict, db: AsyncSession) -> bool:
             return False
         
         # Find user in database
-        user_query = text("SELECT * FROM site_users WHERE email = :email AND is_active = true")
+        user_query = text("SELECT * FROM omnigatech.site_users WHERE email = :email AND is_active = true")
         user_result = await db.execute(user_query, {"email": customer.email})
         user = user_result.first()
         
@@ -923,7 +923,7 @@ async def handle_subscription_webhook(event: dict, db: AsyncSession) -> bool:
                 current_period_end = datetime.fromtimestamp(subscription['current_period_end'])
             
             insert_query = text("""
-                INSERT INTO user_stripe_subscriptions (
+                INSERT INTO omnigatech.user_stripe_subscriptions (
                     id, user_id, stripe_subscription_id, stripe_customer_id, plan_name,
                     status, current_period_start, current_period_end, amount, currency,
                     interval, created_at, updated_at
@@ -970,7 +970,7 @@ async def handle_subscription_webhook(event: dict, db: AsyncSession) -> bool:
                 update_fields.append("canceled_at = NOW()")
             
             update_query = text(f"""
-                UPDATE user_stripe_subscriptions 
+                UPDATE omnigatech.user_stripe_subscriptions 
                 SET {', '.join(update_fields)}
                 WHERE stripe_subscription_id = :stripe_subscription_id
             """)
@@ -1000,7 +1000,7 @@ async def handle_invoice_webhook(event: dict, db: AsyncSession) -> bool:
             return True  # Not an error, just skip
         
         # Find user
-        user_query = text("SELECT * FROM site_users WHERE email = :email AND is_active = true")
+        user_query = text("SELECT * FROM omnigatech.site_users WHERE email = :email AND is_active = true")
         user_result = await db.execute(user_query, {"email": invoice['customer_email']})
         user = user_result.first()
         
@@ -1011,7 +1011,7 @@ async def handle_invoice_webhook(event: dict, db: AsyncSession) -> bool:
         # Record payment in payment_history table
         payment_id = str(uuid.uuid4())
         payment_query = text("""
-            INSERT INTO payment_history (
+            INSERT INTO omnigatech.payment_history (
                 id, user_id, subscription_id, stripe_invoice_id, stripe_payment_intent_id,
                 amount, currency, status, payment_method_type, created_at
             ) VALUES (

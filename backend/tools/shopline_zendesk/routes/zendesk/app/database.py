@@ -95,7 +95,7 @@ async def create_tables():
         await conn.run_sync(Base.metadata.create_all)
         # Supplementary tables queried by stripe/user routers (not in SQLAlchemy models).
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS public.subscription_plans (
+            CREATE TABLE IF NOT EXISTS omnigatech.subscription_plans (
                 id uuid PRIMARY KEY,
                 stripe_price_id varchar(255),
                 stripe_product_id varchar(255),
@@ -113,9 +113,9 @@ async def create_tables():
             )
         """))
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS public.plan_features (
+            CREATE TABLE IF NOT EXISTS omnigatech.plan_features (
                 id uuid PRIMARY KEY,
-                plan_id uuid REFERENCES public.subscription_plans(id),
+                plan_id uuid REFERENCES omnigatech.subscription_plans(id),
                 feature_key varchar(255) NOT NULL,
                 feature_value text,
                 feature_type varchar(100),
@@ -124,12 +124,12 @@ async def create_tables():
             )
         """))
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS public.user_subscriptions (
+            CREATE TABLE IF NOT EXISTS omnigatech.user_subscriptions (
                 id uuid PRIMARY KEY,
                 user_id text NOT NULL,
                 stripe_subscription_id varchar(255) NOT NULL UNIQUE,
                 stripe_customer_id varchar(255) NOT NULL,
-                plan_id uuid REFERENCES public.subscription_plans(id),
+                plan_id uuid REFERENCES omnigatech.subscription_plans(id),
                 status varchar(50) NOT NULL,
                 current_period_start timestamptz NOT NULL,
                 current_period_end timestamptz NOT NULL,
@@ -148,7 +148,7 @@ async def create_tables():
             )
         """))
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS public.payment_history (
+            CREATE TABLE IF NOT EXISTS omnigatech.payment_history (
                 id uuid PRIMARY KEY,
                 user_id text NOT NULL,
                 subscription_id uuid,
@@ -173,7 +173,7 @@ async def create_tables():
             )
         """))
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS public.webhook_events (
+            CREATE TABLE IF NOT EXISTS omnigatech.webhook_events (
                 id uuid PRIMARY KEY,
                 stripe_event_id varchar(255) UNIQUE NOT NULL,
                 event_type varchar(255) NOT NULL,

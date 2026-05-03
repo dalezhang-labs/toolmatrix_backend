@@ -7,16 +7,18 @@ from .base import Base
 user_tenants = Table(
     'user_tenants',
     Base.metadata,
-    Column('user_id', String, ForeignKey('site_users.id'), primary_key=True),
-    Column('tenant_id', String, ForeignKey('tenants.id'), primary_key=True),
-    Column('is_owner', Boolean, default=False),  # 是否是租户的所有者
+    Column('user_id', String, ForeignKey('omnigatech.site_users.id'), primary_key=True),
+    Column('tenant_id', String, ForeignKey('omnigatech.tenants.id'), primary_key=True),
+    Column('is_owner', Boolean, default=False),
     Column('created_at', DateTime, default=datetime.utcnow),
-    Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+    schema='omnigatech',
 )
 
 class SiteUserModel(Base):
     """网站用户模型 - 用于登录官网并管理订阅的用户"""
     __tablename__ = "site_users"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
     email = Column(String, unique=True, nullable=False)
@@ -82,9 +84,10 @@ class SiteUserModel(Base):
 class UserStripeSubscription(Base):
     """用户的 Stripe 订阅记录"""
     __tablename__ = "user_stripe_subscriptions"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
-    user_id = Column(String, ForeignKey("site_users.id"), nullable=False)
+    user_id = Column(String, ForeignKey("omnigatech.site_users.id"), nullable=False)
     stripe_subscription_id = Column(String, unique=True, nullable=False)
     stripe_customer_id = Column(String, nullable=False)
     

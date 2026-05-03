@@ -276,7 +276,7 @@ async def bind_tenant_to_user(
         
         # 检查是否已经存在关联
         existing_result = await db.execute(
-            text("SELECT 1 FROM user_tenants WHERE user_id = :user_id AND tenant_id = :tenant_id"),
+            text("SELECT 1 FROM omnigatech.user_tenants WHERE user_id = :user_id AND tenant_id = :tenant_id"),
             {"user_id": user.id, "tenant_id": tenant_id}
         )
         existing = existing_result.scalar()
@@ -284,7 +284,7 @@ async def bind_tenant_to_user(
         if not existing:
             # 插入关联
             await db.execute(
-                text("INSERT INTO user_tenants (user_id, tenant_id, is_owner) VALUES (:user_id, :tenant_id, :is_owner)"),
+                text("INSERT INTO omnigatech.user_tenants (user_id, tenant_id, is_owner) VALUES (:user_id, :tenant_id, :is_owner)"),
                 {"user_id": user.id, "tenant_id": tenant_id, "is_owner": binding_data.is_owner}
             )
         

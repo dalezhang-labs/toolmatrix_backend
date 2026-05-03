@@ -64,6 +64,7 @@ class SubscriptionStatus(str, Enum):
 # SQLAlchemy 数据库模型
 class TenantModel(Base):
     __tablename__ = "tenants"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
     zendesk_subdomain = Column(String, unique=True, nullable=False)
@@ -87,9 +88,10 @@ class TenantModel(Base):
 
 class SubscriptionModel(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
-    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("omnigatech.tenants.id"), nullable=False)
     plan_type = Column(String, nullable=False)  # basic, professional, enterprise
     agent_count = Column(Integer, nullable=False)
     monthly_price = Column(Float, nullable=False)
@@ -104,9 +106,10 @@ class SubscriptionModel(Base):
 
 class ApiLogModel(Base):
     __tablename__ = "api_logs"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
-    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("omnigatech.tenants.id"), nullable=False)
     endpoint = Column(String, nullable=False)
     method = Column(String, nullable=False)
     status_code = Column(Integer, nullable=False)
@@ -123,6 +126,7 @@ class ApiLogModel(Base):
 
 class UserModel(Base):
     __tablename__ = "users"
+    __table_args__ = {"schema": "omnigatech"}
     
     id = Column(String, primary_key=True)
     email = Column(String, unique=True, nullable=False)
