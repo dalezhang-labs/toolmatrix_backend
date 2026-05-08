@@ -23,3 +23,8 @@ email-validator>=2.0,<3.0
 python-jose[cryptography]>=3.3,<4.0
 passlib[bcrypt]>=1.7,<2.0
 bcrypt>=4.0,<5.0
+
+# Content Collector
+apscheduler>=3.10,<4.0
+beautifulsoup4>=4.12,<5.0
+scikit-learn>=1.4,<2.0

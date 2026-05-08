@@ -39,6 +39,12 @@ from backend.tools.shopline_zendesk.services.token_refresh_job import (
     start_refresh_job,
     stop_refresh_job,
 )
+from backend.tools.content_collector.mounts import include_content_collector_routes
+from backend.tools.content_collector.database import create_content_collector_tables
+from backend.tools.content_collector.services.scheduler import (
+    start_scheduler as start_cc_scheduler,
+    stop_scheduler as stop_cc_scheduler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +104,9 @@ include_oauth_routes(app)
 # -- Tool: OmnigaTech
 include_omnigatech_routes(app)
 
+# -- Tool: Content Collector
+include_content_collector_routes(app)
+
 @app.on_event("startup")
 async def _startup_env_check():
     logger.info("DaleToolMatrix starting up...")
@@ -120,6 +129,14 @@ async def _startup_env_check():
     except Exception:
         logger.exception("Failed to start token refresh job")
 
+    # Content Collector
+    try:
+        await create_content_collector_tables()
+        start_cc_scheduler()
+        logger.info("Content Collector scheduler started")
+    except Exception:
+        logger.exception("Failed to start Content Collector")
+
 
 @app.get("/health")
 async def health():
@@ -130,3 +147,8 @@ async def health():
 async def _shutdown():
     stop_refresh_job()
     logger.info("Token refresh job stopped")
+    try:
+        stop_cc_scheduler()
+        logger.info("Content Collector scheduler stopped")
+    except Exception:
+        logger.exception("Failed to stop Content Collector scheduler")
