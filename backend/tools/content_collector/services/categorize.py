@@ -75,6 +75,8 @@ SOURCE_FORCED_CATEGORY: dict[str, str] = {
     "ithome": "knowledge",
     "hackernews": "knowledge",
     "github_trending": "knowledge",
+    "github_trending_weekly": "knowledge",
+    "github_trending_monthly": "knowledge",
     "simon_willison": "knowledge",
     "hf_daily_papers": "knowledge",
     # Follow Builders — curated AI X/blog/podcast feed
