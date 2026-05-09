@@ -243,6 +243,10 @@ async def generate_digest(
                         (ItemSnapshot.item_id == latest.c.item_id)
                         & (ItemSnapshot.captured_at == latest.c.captured_at),
                     )
+                    # Digest only covers knowledge/tech — news is excluded
+                    # so the daily snapshot stays focused on AI & tech.
+                    .where(Item.category == "knowledge")
+                    .where(Source.enabled.is_(True))
                     .order_by(desc(ItemSnapshot.hot_score * Source.weight))
                     .limit(20)
                 )
