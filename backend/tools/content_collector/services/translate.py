@@ -121,6 +121,12 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
             content = resp.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             results = parsed.get("r") or []
+            if not results:
+                logger.warning(
+                    "content_collector: translator returned empty results. "
+                    "content[:400]=%s",
+                    (content or "")[:400],
+                )
     except Exception as e:  # pragma: no cover
         logger.warning("content_collector: translator error: %s", e)
         return [None] * len(titles)
