@@ -322,22 +322,26 @@ async def _llm_classify_batch(titles: list[str]) -> list[str]:
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # Newer reasoning-capable models (gpt-5.x, o-series) require
+            # `max_completion_tokens`; classic chat models accept `max_tokens`.
+            # Use the new param — newer models need it, older ones accept it.
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_payload},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.0,
+                "max_completion_tokens": 1500,
+            }
             resp = await client.post(
                 url,
                 headers={
                     "api-key": api_key,
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": _LLM_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_payload},
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.0,
-                    "max_tokens": 1500,
-                },
+                json=body,
             )
             if resp.status_code >= 400:
                 # Azure returns the useful error body; surface it so we can

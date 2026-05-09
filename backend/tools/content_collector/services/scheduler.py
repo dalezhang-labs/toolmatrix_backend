@@ -36,7 +36,7 @@ def _start_initial_runs() -> None:
         logger.info("content_collector: initial fetch for %d sources", len(slugs))
         # Stagger a bit so we don't hammer all sources simultaneously
         for i, slug in enumerate(slugs):
-            await asyncio.sleep(0.5 * i)
+            await asyncio.sleep(0.3 * i)
             try:
                 result = await run_source(slug)
                 logger.info("initial fetch %s -> %s", slug, result.get("status"))
