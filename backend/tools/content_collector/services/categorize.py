@@ -46,20 +46,11 @@ CATEGORIES: dict[str, dict] = {
         "en": "AI · Tech · Startups",
         "desc": "AI, LLMs, dev tools, hardware, open source, Product Hunt, VC",
     },
-    "health": {
-        "zh": "健康医疗",
-        "en": "Health",
-        "desc": "Diseases, medicine, fitness, mental health, biotech",
-    },
-    "growth": {
-        "zh": "情感成长",
-        "en": "Growth",
-        "desc": "Psychology, relationships, self-improvement, philosophy, life reflections",
-    },
     "other": {
         "zh": "其他",
         "en": "Other",
-        "desc": "Entertainment, sports, gaming, lifestyle, markets — not of interest by default",
+        "desc": "Health, growth, entertainment, sports, gaming, lifestyle — "
+                "not of primary interest; kept for completeness.",
     },
 }
 
@@ -94,30 +85,18 @@ SOURCE_FORCED_CATEGORY: dict[str, str] = {
     "follow_builders_x": "knowledge",
     "follow_builders_blogs": "knowledge",
     "follow_builders_podcasts": "knowledge",
-
-    # Growth / psychology / life essays
-    "ness_labs": "growth",
-    "farnam_street": "growth",
-    "growth_blogs": "growth",
-
-    # Health
-    "stat_news": "health",
-    "health_sources": "health",
 }
 
-# Sources whose `Source.category == 'tech'`, 'china'... may also receive
-# a weaker fallback mapping after rules fail but before LLM. See
-# _fallback_by_source_category.
+# Sources whose `Source.category == 'tech'` / 'china' / 'world' get a
+# weaker fallback after rules fail but before LLM.
 _SOURCE_CATEGORY_FALLBACK: dict[str, str] = {
     "tech": "knowledge",
-    "health": "health",
-    "growth": "growth",
     # Anything clearly journalistic goes to news by default. Better than
-    # forcing the LLM to decide on every 虎嗅 / 36氪 / BBC headline.
+    # asking the LLM to decide on every 虎嗅 / 36氪 / BBC headline.
     "china": "news",
     "world": "news",
-    # `finance` stays UNMAPPED — Dale's rules explicitly route finance to
-    # 'other'. Letting the rule hit first and fall through to other is fine.
+    # `finance` and other edge categories fall through to 'other' via LLM
+    # or rule_fallback.
 }
 
 
@@ -129,8 +108,10 @@ _SOURCE_CATEGORY_FALLBACK: dict[str, str] = {
 # Keywords are case-insensitive for English; Chinese is already case-free.
 _RULES: list[tuple[str, list[str]]] = [
     # ============================================================
-    # OTHER — things Dale explicitly doesn't care about. Match these
-    # FIRST so obvious stuff skips the LLM entirely.
+    # OTHER — everything Dale doesn't want in the main feed:
+    # entertainment, sports, gaming, lifestyle, markets, AND now also
+    # health + growth topics (previously their own categories, demoted
+    # because Dale isn't using them day-to-day).
     # ============================================================
 
     # Entertainment: celebrities, shows, concerts, K-pop
@@ -241,39 +222,32 @@ _RULES: list[tuple[str, list[str]]] = [
     ]),
 
     # ============================================================
-    # HEALTH — disease, medicine, fitness, mental health
+    # HEALTH & GROWTH topics — demoted to 'other' so they don't pollute
+    # the News or AI·Tech tabs. Dale explicitly opted out of these as
+    # first-class categories.
     # ============================================================
-    ("health", [
+    ("other", [
+        # Health
         r"病毒", r"疫情", r"疫苗", r"确诊", r"癌症", r"糖尿病",
         r"高血压", r"心血管", r"艾滋", r"HIV", r"COVID",
         r"汉坦", r"流感", r"发烧", r"卵巢", r"子宫", r"乳腺",
         r"白血病", r"阿尔茨海默", r"帕金森", r"\bWHO\b", r"疾控",
         r"医保", r"医院", r"住院", r"手术", r"临床",
         r"蚕豆病", r"消杀",
-        # Fitness / wellness (the physical health side)
+        # Fitness / wellness
         r"减肥", r"健身", r"瑜伽", r"跑步机", r"养生",
-    ]),
 
-    # ============================================================
-    # GROWTH — psychology, relationships, self-improvement, philosophy,
-    # life reflections. Many of Dale's Zhihu feed lives here.
-    # ============================================================
-    ("growth", [
         # Mental / emotional
         r"抑郁", r"焦虑", r"失眠", r"心理健康", r"精神内耗",
-        r"情绪", r"孤独", r"内耗", r"自我认知", r"自我",
-        r"冥想", r"正念", r"\bMBTI\b", r"\bINFP\b", r"\bINTJ\b",
-        r"\bENFP\b", r"\bISFJ\b",
+        r"情绪", r"孤独", r"内耗", r"自我认知",
+        r"冥想", r"正念", r"\bMBTI\b",
         r"原生家庭", r"亲密关系", r"分手", r"相亲", r"婚姻",
-        r"恋爱", r"追求", r"喜欢的人", r"前任",
+        r"恋爱", r"追求",
 
-        # Philosophy / humanities reflection
-        r"哲学", r"意义", r"人生", r"为什么活", r"活着",
-        r"读书", r"书评", r"书单",
-
-        # Career / self-improvement (often fuzzy; match on question form)
-        r"如何自学", r"如何应对", r"如何处理", r"怎么做",
-        r"职场", r"辞职", r"跳槽", r"内卷", r"躺平", r"摆烂",
+        # Philosophy / self-improvement
+        r"哲学", r"人生意义", r"读书", r"书评", r"书单",
+        r"如何自学", r"如何应对", r"如何处理",
+        r"辞职", r"跳槽", r"内卷", r"躺平", r"摆烂",
         r"考研", r"保研", r"高考",
     ]),
 
@@ -323,23 +297,20 @@ def rule_classify(title: str) -> str | None:
 
 _LLM_SYSTEM_PROMPT = (
     "You classify news headlines for a personal dashboard. The user ONLY "
-    "cares about four topics; everything else is 'other'.\n\n"
+    "cares about two topics; everything else is 'other'.\n\n"
     "Categories (closed set):\n"
     "- news:      social events, public affairs, controversies, politics, international, "
     "law enforcement, disasters — the stuff you'd see on a news site's front page.\n"
     "- knowledge: AI, LLMs, developer tools, open source, hardware, science, "
     "startups, funding, Product Hunt, tech companies.\n"
-    "- health:    diseases, epidemics, vaccines, medicine, fitness, mental health, biotech.\n"
-    "- growth:    psychology, relationships, self-improvement, philosophy, "
-    "life reflections, career advice, introspective Zhihu-style questions.\n"
-    "- other:     entertainment, celebrities, sports, video games, lifestyle/shopping, "
-    "stock markets, crypto, food — the user explicitly does NOT want these highlighted.\n\n"
+    "- other:     everything else (health, psychology, self-help, entertainment, "
+    "celebrities, sports, video games, lifestyle/shopping, stock markets, crypto, food). "
+    "The user explicitly does NOT want these highlighted.\n\n"
     "Rules:\n"
     "- Return ONLY a JSON object: {\"results\": [{\"i\": <index>, \"c\": \"<category>\"}]}\n"
     "- Chinese titles are OK — classify by meaning, not language.\n"
     "- When a headline spans multiple buckets, pick the primary intent. "
     "E.g. 'OpenAI sued by NYT' → knowledge (it's about an AI company).\n"
-    "- Zhihu-style philosophical/personal questions → growth.\n"
     "- Breaking hot-search events about people/places/crimes → news.\n"
     "- When truly in doubt, 'other' is a safe default.\n"
 )
