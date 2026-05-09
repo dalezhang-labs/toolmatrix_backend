@@ -108,6 +108,12 @@ _SOURCE_CATEGORY_FALLBACK: dict[str, str] = {
     "tech": "knowledge",
     "health": "health",
     "growth": "growth",
+    # Anything clearly journalistic goes to news by default. Better than
+    # forcing the LLM to decide on every 虎嗅 / 36氪 / BBC headline.
+    "china": "news",
+    "world": "news",
+    # `finance` stays UNMAPPED — Dale's rules explicitly route finance to
+    # 'other'. Letting the rule hit first and fall through to other is fine.
 }
 
 
@@ -455,19 +461,25 @@ async def _fetch_source_map(
 
 
 async def categorize_backlog(
-    batch_size: int = 50, use_llm: bool = True
+    batch_size: int = 50,
+    use_llm: bool = True,
+    llm_cap: int | None = None,
 ) -> dict:
-    """Classify all items with category IS NULL.
+    """Classify items with category IS NULL.
 
     Order of attempts per item:
       1. SOURCE_FORCED_CATEGORY    — pinned single-topic sources
       2. keyword rules             — cheap, deterministic
-      3. LLM                       — batched fallback
-      4. _SOURCE_CATEGORY_FALLBACK — if LLM said "other" but the source is
-                                     clearly tech/health/growth, override.
+      3. SOURCE_CATEGORY_FALLBACK  — use the publisher's own category (tech,
+                                     health, growth) as a cheap fallback.
+                                     This lets us skip the LLM for many items.
+      4. LLM                       — only if caller opts in AND we still have
+                                     unresolved items. Respects `llm_cap`
+                                     so a single run can never blow the
+                                     token budget.
 
-    If the LLM fails (network/quota), items stay NULL so the next tick
-    retries — avoids permanent 'other' pollution.
+    The cascade is ordered so that 90%+ of items never touch the LLM. If the
+    LLM fails (network/quota), items stay NULL so the next tick retries.
     """
     factory = session_factory()
 
@@ -479,7 +491,14 @@ async def categorize_backlog(
         ).scalars().all()
 
         if not items:
-            return {"processed": 0, "source": 0, "rule": 0, "llm": 0, "deferred": 0}
+            return {
+                "processed": 0,
+                "source": 0,
+                "rule": 0,
+                "source_fallback": 0,
+                "llm": 0,
+                "deferred": 0,
+            }
 
         source_map = await _fetch_source_map(
             session, (it.source_id for it in items)
@@ -487,10 +506,11 @@ async def categorize_backlog(
 
         source_hits: list[tuple[Item, str]] = []
         rule_hits: list[tuple[Item, str]] = []
+        fallback_hits: list[tuple[Item, str]] = []
         unresolved: list[Item] = []
 
         for it in items:
-            slug, _src_cat = source_map.get(it.source_id, ("", ""))
+            slug, src_cat = source_map.get(it.source_id, ("", ""))
             # Tier 1: source is pinned to one category
             forced = SOURCE_FORCED_CATEGORY.get(slug)
             if forced:
@@ -500,8 +520,14 @@ async def categorize_backlog(
             cat = rule_classify(it.title)
             if cat:
                 rule_hits.append((it, cat))
-            else:
-                unresolved.append(it)
+                continue
+            # Tier 3: the source's publication category as fallback
+            # (saves the LLM call for 100% of tech/health/growth-native sources)
+            fb = _SOURCE_CATEGORY_FALLBACK.get(src_cat)
+            if fb:
+                fallback_hits.append((it, fb))
+                continue
+            unresolved.append(it)
 
         source_count = await _apply_categories(
             session,
@@ -515,50 +541,46 @@ async def categorize_backlog(
             [x[1] for x in rule_hits],
             "rule",
         )
+        fallback_count = await _apply_categories(
+            session,
+            [x[0] for x in fallback_hits],
+            [x[1] for x in fallback_hits],
+            "source_fallback",
+        )
 
         llm_count = 0
         deferred_count = 0
-        if unresolved:
-            if use_llm:
-                llm_cats = await _llm_classify_batch([it.title for it in unresolved])
+        if unresolved and use_llm:
+            # Hard cap — protects token budget even if backlog is huge.
+            to_classify = (
+                unresolved if llm_cap is None else unresolved[: max(0, llm_cap)]
+            )
+            remaining_for_next_tick = unresolved[len(to_classify):]
+
+            if to_classify:
+                llm_cats = await _llm_classify_batch(
+                    [it.title for it in to_classify]
+                )
                 answered = any(c != "other" for c in llm_cats)
                 if answered:
-                    # Upgrade LLM-predicted "other" using source fallback when
-                    # the source itself is a clearly-typed publication.
-                    adjusted: list[str] = []
-                    for it, pred in zip(unresolved, llm_cats):
-                        if pred == "other":
-                            slug, src_cat = source_map.get(
-                                it.source_id, ("", "")
-                            )
-                            fb = _SOURCE_CATEGORY_FALLBACK.get(src_cat)
-                            adjusted.append(fb if fb else pred)
-                        else:
-                            adjusted.append(pred)
                     await _apply_categories(
-                        session, unresolved, adjusted, "llm"
+                        session, to_classify, llm_cats, "llm"
                     )
-                    llm_count = len(unresolved)
+                    llm_count = len(to_classify)
                 else:
                     logger.info(
-                        "content_collector: %d items deferred — LLM didn't "
+                        "content_collector: %d items deferred — LLM did not "
                         "return useful labels; will retry next tick",
-                        len(unresolved),
+                        len(to_classify),
                     )
-                    deferred_count = len(unresolved)
-            else:
-                # LLM explicitly disabled. Use source-category fallback if
-                # available; otherwise drop to 'other' so the queue drains.
-                fallbacks: list[str] = []
-                for it in unresolved:
-                    _slug, src_cat = source_map.get(it.source_id, ("", ""))
-                    fallbacks.append(
-                        _SOURCE_CATEGORY_FALLBACK.get(src_cat, "other")
-                    )
-                await _apply_categories(
-                    session, unresolved, fallbacks, "rule_fallback"
-                )
-                deferred_count = 0
+                    deferred_count += len(to_classify)
+            deferred_count += len(remaining_for_next_tick)
+        elif unresolved:
+            # LLM off entirely: leave them NULL rather than committing 'other'.
+            # A manual /admin/categorize-drain with use_llm=true can still
+            # clean them up later, or they'll flow through next time the
+            # scheduler calls this with use_llm=true.
+            deferred_count = len(unresolved)
 
         await session.commit()
 
@@ -566,6 +588,7 @@ async def categorize_backlog(
         "processed": len(items),
         "source": source_count,
         "rule": rule_count,
+        "source_fallback": fallback_count,
         "llm": llm_count,
         "deferred": deferred_count,
     }

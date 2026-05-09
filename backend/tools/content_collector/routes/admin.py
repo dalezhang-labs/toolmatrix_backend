@@ -65,12 +65,28 @@ async def trigger_categorize(
 
 @router.post("/categorize-drain")
 async def trigger_categorize_drain(
-    use_llm: bool = True, max_batches: int = 40,
+    use_llm: bool = True,
+    max_batches: int = 40,
+    llm_cap_per_batch: int = 50,
 ):
-    """Repeatedly classify until the backlog is empty (or max_batches hit)."""
-    total = {"processed": 0, "source": 0, "rule": 0, "llm": 0, "deferred": 0}
+    """Repeatedly classify until the backlog is empty (or max_batches hit).
+
+    `llm_cap_per_batch` limits how many items per batch are allowed to hit
+    the LLM — set to 0 to stop all LLM calls for this drain (useful for
+    testing / cost-capped re-processing).
+    """
+    total = {
+        "processed": 0,
+        "source": 0,
+        "rule": 0,
+        "source_fallback": 0,
+        "llm": 0,
+        "deferred": 0,
+    }
     for _ in range(max_batches):
-        r = await categorize_backlog(use_llm=use_llm)
+        r = await categorize_backlog(
+            use_llm=use_llm, llm_cap=llm_cap_per_batch
+        )
         for k in total:
             total[k] += r.get(k, 0)
         if r.get("processed", 0) == 0:

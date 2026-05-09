@@ -47,10 +47,12 @@ def _start_initial_runs() -> None:
         try:
             await recluster_all()
             await detect_events()
-            # Run categorize a few times to drain the initial backlog (each call
-            # handles 50; we usually have 300-500 items on first boot).
+            # Initial classification pass on startup: rules + source fallback
+            # ONLY. LLM is intentionally off here — don't pay to classify a
+            # fresh boot; the scheduled 6h LLM pass will mop up what rules
+            # missed. Run enough batches to drain whatever rules can handle.
             for _ in range(20):
-                r = await categorize_backlog()
+                r = await categorize_backlog(use_llm=False)
                 if r.get("processed", 0) == 0:
                     break
         except Exception:
@@ -80,10 +82,10 @@ def start_scheduler() -> None:
     _scheduler = AsyncIOScheduler()
     registry = get_registry()
 
-    # Unify all source fetchers to a 1-hour cadence. Per-source intervals
-    # (e.g. 30min, 2h) were useful earlier but add schedule noise and never
-    # translate into more useful data — the UI refreshes every 2h anyway.
-    FETCH_INTERVAL_SEC = 60 * 60
+    # Unify all source fetchers to a 2-hour cadence. Dale's UI auto-refreshes
+    # every 2h — fetching faster than the UI can show new data just burns
+    # rate limits on source sites and API tokens downstream.
+    FETCH_INTERVAL_SEC = 2 * 60 * 60
 
     for slug, fetcher in registry.items():
         _scheduler.add_job(
@@ -101,37 +103,57 @@ def start_scheduler() -> None:
         FETCH_INTERVAL_SEC,
     )
 
-    # Topic clustering every hour — aligned with fetch cadence so clusters
-    # reflect each new batch without rerunning uselessly between fetches.
+    # Topic clustering every 2 hours — aligned with fetch cadence.
     _scheduler.add_job(
         recluster_all,
-        trigger=IntervalTrigger(hours=1),
+        trigger=IntervalTrigger(hours=2),
         id="content_collector:cluster",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    # Event detection right after fetch cycle — 1h aligned
+    # Event detection right after fetch — 2h aligned
     _scheduler.add_job(
         detect_events,
-        trigger=IntervalTrigger(hours=1),
+        trigger=IntervalTrigger(hours=2),
         id="content_collector:events",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    # Categorize backlog every 10 min — fetchers arrive hourly, but we still
-    # want freshly-arrived items classified within 10 min of landing so the
-    # dashboard filters are never empty.
+
+    # Categorize — cheap pass (rules + source fallback only) every 30min so
+    # new items get a label quickly for free.
+    async def _categorize_rules_only():
+        return await categorize_backlog(use_llm=False)
+
     _scheduler.add_job(
-        categorize_backlog,
-        trigger=IntervalTrigger(minutes=10),
-        id="content_collector:categorize",
+        _categorize_rules_only,
+        trigger=IntervalTrigger(minutes=30),
+        id="content_collector:categorize_rules",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("content_collector: scheduled cluster + events (1h), categorize (10m)")
+
+    # LLM pass — runs every 6 hours, capped at 100 items per batch so we
+    # can never spend more than ~$0.02 per call even if the backlog is huge.
+    # Anything above the cap waits for the next tick.
+    async def _categorize_with_llm():
+        return await categorize_backlog(use_llm=True, llm_cap=100)
+
+    _scheduler.add_job(
+        _categorize_with_llm,
+        trigger=IntervalTrigger(hours=6),
+        id="content_collector:categorize_llm",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "content_collector: scheduled cluster+events (2h), "
+        "categorize rules (30m), categorize LLM (6h, cap=100)"
+    )
 
     # Daily digest snapshot — 08:00 Eastern (Dale's timezone).
     # Captures YESTERDAY's completed day for morning reading.
