@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 
 
 _SYSTEM_PROMPT = (
-    "You translate English tech-news headlines into concise, native-sounding "
-    "Simplified Chinese for a personal dashboard.\n\n"
+    "You translate English tech-news content into concise, native-sounding "
+    "Simplified Chinese for a personal dashboard. Each item has a title and "
+    "optionally a summary — translate both.\n\n"
     "STRICT RULES:\n"
     "1. KEEP these kinds of terms in their original English — do NOT "
     "transliterate or translate:\n"
@@ -52,31 +53,41 @@ _SYSTEM_PROMPT = (
     "Dario Amodei, Demis Hassabis (stay in English unless you know a "
     "widely-used Chinese name, in which case use it)\n"
     "   - Technical acronyms: AI, LLM, AGI, API, SDK, RAG, MCP, CVE, GPU, "
-    "CPU, IPO, VC, SaaS, MVP, UI, UX\n"
+    "CPU, IPO, VC, SaaS, MVP, UI, UX, MoE, RL\n"
     "   - Version numbers, model names, benchmark names: GPT-5, "
     "Claude Opus 4.7, Gemini 2.5, MMLU, etc.\n\n"
     "2. Translate the SURROUNDING text into natural Chinese that a "
     "Chinese-speaking software engineer would actually use.\n\n"
-    "3. Keep the translation CONCISE — aim for the same length or shorter "
-    "than the English original.\n\n"
+    "3. Keep translations CONCISE — similar length or shorter than the "
+    "English original. Summary translations should fit roughly 60-120 "
+    "Chinese characters.\n\n"
     "4. Do NOT translate URLs, code, file paths, or handles like @swyx.\n\n"
     "5. Return ONLY a JSON object of this shape, no prose, no markdown:\n"
-    "   {\"r\": [{\"i\": <index>, \"t\": \"<title_zh>\"}]}\n"
-    "   Omit entries for items you can't translate (they'll retry later).\n\n"
+    "   {\"r\": [{\"i\": <index>, \"t\": \"<title_zh>\", \"s\": \"<summary_zh or empty string>\"}]}\n"
+    "   - `t` is required. If the title has no natural translation "
+    "(version tags like 'llm 0.32a0'), return the English unchanged.\n"
+    "   - `s` is optional. Omit or leave as empty string when the input "
+    "had no summary, or when the summary would just be machine noise.\n"
+    "   - Omit whole entries for items you can't translate (they'll retry).\n\n"
     "EXAMPLES:\n"
-    "  EN: 'Anthropic signs $1.8 billion AI cloud deal with Akamai'\n"
-    "  ZH: 'Anthropic 与 Akamai 签署 18 亿美元 AI 云服务合作'\n\n"
-    "  EN: '@sama: we'd like to help companies secure themselves'\n"
-    "  ZH: '@sama：我们希望帮助企业做好自身安全'\n\n"
-    "  EN: 'llm-gemini 0.31'\n"
-    "  ZH: 'llm-gemini 0.31'  (version tag, no natural translation)\n"
+    "  Input:\n"
+    "    0. TITLE: Anthropic signs $1.8 billion AI cloud deal with Akamai\n"
+    "       SUMMARY: Anthropic today announced a multi-year partnership with Akamai...\n"
+    "  Output entry:\n"
+    "    {\"i\": 0, \"t\": \"Anthropic 与 Akamai 签署 18 亿美元 AI 云服务合作\", "
+    "\"s\": \"Anthropic 今天宣布与 Akamai 达成多年合作…\"}\n"
 )
 
 
-async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
-    """Return a list of translations aligned with `titles`; None = couldn't
-    translate this one. On transport failure, returns all-None."""
-    if not titles:
+async def _llm_translate_batch(
+    entries: list[tuple[str, str | None]]
+) -> list[tuple[str | None, str | None]]:
+    """Translate (title, summary) pairs in one LLM call.
+
+    Returns a list aligned with `entries` of (title_zh, summary_zh). Either
+    item can be None when the LLM didn't provide one. On transport failure,
+    returns all-None pairs."""
+    if not entries:
         return []
 
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -86,13 +97,20 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
         logger.warning(
             "content_collector: translator skipped (missing AZURE_OPENAI_*)"
         )
-        return [None] * len(titles)
+        return [(None, None)] * len(entries)
 
     url = endpoint.rstrip("/") + "/chat/completions"
-    user_payload = "\n".join(f"{i}. {t[:250]}" for i, t in enumerate(titles))
+    # Compact input format keeps token usage low.
+    lines: list[str] = []
+    for i, (title, summary) in enumerate(entries):
+        lines.append(f"{i}. TITLE: {title[:250]}")
+        if summary:
+            # Cap summary to 400 chars — anything longer is noise for a preview
+            lines.append(f"   SUMMARY: {summary[:400]}")
+    user_payload = "\n".join(lines)
 
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             body = {
                 "model": model,
                 "messages": [
@@ -101,7 +119,8 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
                 ],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.1,
-                "max_completion_tokens": 2500,
+                # More tokens: summaries roughly double output size
+                "max_completion_tokens": 5000,
             }
             resp = await client.post(
                 url,
@@ -117,7 +136,7 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
                     resp.status_code,
                     resp.text[:400],
                 )
-                return [None] * len(titles)
+                return [(None, None)] * len(entries)
             content = resp.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             results = parsed.get("r") or []
@@ -129,19 +148,23 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
                 )
     except Exception as e:  # pragma: no cover
         logger.warning("content_collector: translator error: %s", e)
-        return [None] * len(titles)
+        return [(None, None)] * len(entries)
 
-    out: list[str | None] = [None] * len(titles)
+    out: list[tuple[str | None, str | None]] = [(None, None)] * len(entries)
     for r in results:
         try:
             idx = int(r["i"])
-            text = str(r["t"]).strip()
-            if 0 <= idx < len(titles) and text:
-                # Cap to column size. If LLM returned the same string (e.g.
-                # 'llm-gemini 0.31' has no natural translation), we store
-                # the English verbatim — that's a valid "no-op translation"
-                # and marks the row so we don't retry forever.
-                out[idx] = text[:500]
+            if not (0 <= idx < len(entries)):
+                continue
+            title_zh = str(r.get("t") or "").strip() or None
+            summary_zh_raw = r.get("s")
+            summary_zh = str(summary_zh_raw).strip() if summary_zh_raw else None
+            # Cap to column lengths.
+            if title_zh:
+                title_zh = title_zh[:500]
+            if summary_zh:
+                summary_zh = summary_zh[:2000]
+            out[idx] = (title_zh, summary_zh)
         except (KeyError, ValueError, TypeError):
             continue
     return out
@@ -158,19 +181,34 @@ async def translate_backlog(
 ) -> dict:
     """Translate one batch of untranslated EN knowledge/news items.
 
-    `llm_cap` bounds how many items per call actually hit the LLM (for
-    token safety). Defaults to batch_size.
+    Target rows:
+      - source is English
+      - category is 'news' or 'knowledge'
+      - EITHER title_zh is NULL (never translated)
+      - OR summary is non-empty AND summary_zh is NULL (title translated
+        before we started doing summaries — retry to fill the gap)
+
+    `llm_cap` bounds how many items per call actually hit the LLM.
     """
     factory = session_factory()
 
     async with factory() as session:
-        # Pull candidates: English source + category in (news, knowledge) +
-        # not yet translated. Pick recently-seen first so the dashboard gets
-        # the freshest headlines translated first.
+        # Needs title_zh; or has a summary we haven't translated yet.
+        from sqlalchemy import and_, or_
+
+        needs_work = or_(
+            Item.title_zh.is_(None),
+            and_(
+                Item.summary.is_not(None),
+                Item.summary != "",
+                Item.summary_zh.is_(None),
+            ),
+        )
+
         q = (
             select(Item)
             .join(Source, Source.id == Item.source_id)
-            .where(Item.title_zh.is_(None))
+            .where(needs_work)
             .where(Source.lang == "en")
             .where(Item.category.in_(["news", "knowledge"]))
             .order_by(Item.first_seen_at.desc())
@@ -187,15 +225,18 @@ async def translate_backlog(
         translated_count = 0
         if to_translate:
             predictions = await _llm_translate_batch(
-                [it.title for it in to_translate]
+                [(it.title, it.summary) for it in to_translate]
             )
             now = datetime.now(timezone.utc)
-            for it, pred in zip(to_translate, predictions):
-                if pred:
-                    it.title_zh = pred
-                    it.translated_at = now
-                    translated_count += 1
-                # Items without a prediction stay NULL → retried next tick.
+            for it, (title_zh, summary_zh) in zip(to_translate, predictions):
+                if title_zh is None and summary_zh is None:
+                    continue  # full miss — retry next tick
+                if title_zh:
+                    it.title_zh = title_zh
+                if summary_zh:
+                    it.summary_zh = summary_zh
+                it.translated_at = now
+                translated_count += 1
 
         await session.commit()
 
