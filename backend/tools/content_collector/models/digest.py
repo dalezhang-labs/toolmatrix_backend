@@ -7,6 +7,7 @@ Why snapshot (not FK to items/events)?
 """
 
 from datetime import date, datetime
+from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Integer,
     Index,
     JSON,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
