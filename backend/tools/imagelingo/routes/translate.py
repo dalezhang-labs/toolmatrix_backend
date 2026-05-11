@@ -6,11 +6,12 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.db.connection import get_connection
 from backend.tools.imagelingo.services.token_store import get_token
+from backend.tools.imagelingo.services.request_guard import guard_paid_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,10 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
 # ── Routes ───────────────────────────────────────────────────────────────
 
 @router.post("/", response_model=TranslateResponse)
-async def start_translation(req: TranslateRequest, background_tasks: BackgroundTasks):
+async def start_translation(req: TranslateRequest, request: Request, background_tasks: BackgroundTasks):
+    # Security: rate limit + signature verification for paid endpoint
+    await guard_paid_endpoint(request, req.store_handle.strip())
+
     store_id, handle = _resolve_store(req.store_handle.strip())
     token = get_token(handle)
     if not token:
@@ -236,9 +240,13 @@ async def start_translation(req: TranslateRequest, background_tasks: BackgroundT
 
 
 @router.post("/batch", response_model=BatchTranslateResponse)
-async def start_batch_translation(req: BatchTranslateRequest, background_tasks: BackgroundTasks):
+async def start_batch_translation(req: BatchTranslateRequest, request: Request, background_tasks: BackgroundTasks):
     if not req.image_urls:
         raise HTTPException(400, "image_urls must not be empty")
+
+    # Security: rate limit + signature verification for paid endpoint
+    await guard_paid_endpoint(request, req.store_handle.strip())
+
     store_id, handle = _resolve_store(req.store_handle.strip())
     token = get_token(handle)
     if not token:

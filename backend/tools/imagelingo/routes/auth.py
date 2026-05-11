@@ -224,3 +224,24 @@ async def reauth_url(handle: str = ""):
         f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"
     )
     return {"auth_url": auth_url, "handle": handle}
+
+
+# ── Session token for request signing ────────────────────────────────────
+
+@router.get("/session-token")
+async def get_session_token(handle: str = ""):
+    """Return a session token for the store to sign paid API requests.
+    The frontend stores this in memory and uses it to sign translate requests.
+    Only returns a token if the store has a valid Shopline access token.
+    """
+    if not handle:
+        raise HTTPException(400, "handle is required")
+
+    from backend.tools.imagelingo.services.token_store import get_token
+    token = get_token(handle)
+    if not token:
+        raise HTTPException(401, "Store not authenticated")
+
+    from backend.tools.imagelingo.services.request_guard import generate_session_token
+    session_token = generate_session_token(handle)
+    return {"session_token": session_token, "handle": handle}
