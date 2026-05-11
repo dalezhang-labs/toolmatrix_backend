@@ -1,6 +1,6 @@
-"""Image tools service — background removal (gpt-image-1-mini) and smart resize/crop.
+"""Image tools service — background removal (gpt-image-1.5) and smart resize/crop.
 
-Background removal: uses gpt-image-1-mini medium quality (~17s).
+Background removal: uses gpt-image-1.5 quality=high + input_fidelity=high (~30s).
 Smart resize: algorithm-based crop (center) + optional AI extend (GPT Image outpainting).
 """
 from __future__ import annotations
@@ -34,8 +34,7 @@ AZURE_ENDPOINT = os.environ.get(
     "https://foundry-llm-zg.services.ai.azure.com/openai/v1",
 )
 AZURE_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
-BG_REMOVAL_DEPLOYMENT = "gpt-image-1-mini"
-BG_REMOVAL_QUALITY = "medium"
+BG_REMOVAL_DEPLOYMENT = "gpt-image-1.5"
 
 
 def _get_edit_url(deployment: str) -> str:
@@ -48,10 +47,10 @@ def _get_edit_url(deployment: str) -> str:
     return f"{endpoint}/openai/deployments/{deployment}/images/edits?api-version=2025-04-01-preview"
 
 
-# ── Background Removal (gpt-image-1-mini) ────────────────────────────────
+# ── Background Removal (gpt-image-1.5 high + input_fidelity=high) ────────
 
 async def remove_background(image_bytes: bytes, output_format: str = "png") -> bytes:
-    """Remove background using gpt-image-1-mini medium quality. ~17s."""
+    """Remove background using gpt-image-1.5 quality=high input_fidelity=high. ~30s."""
     t0 = time.perf_counter()
 
     img = Image.open(BytesIO(image_bytes))
@@ -93,7 +92,7 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
         "Remove the background from this image completely. "
         "Keep ONLY the main subject/product with pixel-perfect edges. "
         "The background should be pure solid white (#FFFFFF). "
-        "Do NOT alter the product in any way."
+        "Do NOT alter the product in any way - preserve every texture, pattern, and detail exactly as in the original."
     )
 
     edit_url = _get_edit_url(BG_REMOVAL_DEPLOYMENT)
@@ -106,7 +105,8 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
                 "prompt": prompt,
                 "n": "1",
                 "size": api_size,
-                "quality": BG_REMOVAL_QUALITY,
+                "quality": "high",
+                "input_fidelity": "high",
             },
             headers={"api-key": AZURE_API_KEY},
         )
@@ -122,7 +122,7 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
     result_bytes = base64.b64decode(b64)
 
     elapsed = time.perf_counter() - t0
-    logger.info("Background removal (gpt-image-1-mini medium): %.2fs", elapsed)
+    logger.info("Background removal (gpt-image-1.5 high+fidelity): %.2fs", elapsed)
 
     # Restore to original size
     result_img = Image.open(BytesIO(result_bytes))
