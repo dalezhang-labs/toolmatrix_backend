@@ -1,11 +1,12 @@
-"""Image tools service — background removal (GPT Image edit) and smart resize/crop.
+"""Image tools service — background removal (FLUX.1-Kontext-pro) and smart resize/crop.
 
-Background removal: uses GPT Image edit for high-quality results (~25s).
+Background removal: uses FLUX.1-Kontext-pro via images.generate with image reference (~5s).
 Smart resize: algorithm-based crop (center) + optional AI extend (GPT Image outpainting).
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -28,15 +29,27 @@ PRESETS = {
     "9:16": (9, 16),
 }
 
+# FLUX Kontext uses the same Azure endpoint and key as GPT models
+AZURE_ENDPOINT = os.environ.get(
+    "AZURE_OPENAI_ENDPOINT",
+    "https://foundry-llm-zg.services.ai.azure.com/openai/v1",
+)
+AZURE_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
+FLUX_DEPLOYMENT = "FLUX.1-Kontext-pro"
 
-# ── Background Removal (GPT Image edit) ─────────────────────────────────
+
+def _get_flux_client():
+    """Get OpenAI client configured for FLUX.1-Kontext-pro on Azure Foundry."""
+    from openai import OpenAI
+    return OpenAI(base_url=AZURE_ENDPOINT, api_key=AZURE_API_KEY)
+
+
+# ── Background Removal (FLUX.1-Kontext-pro) ─────────────────────────────
 
 async def remove_background(image_bytes: bytes, output_format: str = "png") -> bytes:
-    """Remove background from image using GPT Image edit.
-    Returns image with clean white background. ~25s processing time.
+    """Remove background from image using FLUX.1-Kontext-pro.
+    Uses images.generate with image reference. ~5s processing time.
     """
-    from backend.tools.imagelingo.services.gpt_image_service import _call_image_edit
-
     t0 = time.perf_counter()
 
     img = Image.open(BytesIO(image_bytes))
@@ -45,24 +58,14 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
 
     orig_size = img.size
 
-    # Resize to max 1024px for API
+    # Resize to max 1024px
     max_dim = 1024
     if max(img.size) > max_dim:
         ratio = max_dim / max(img.size)
         new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
         img = img.resize(new_size, Image.LANCZOS)
 
-    # Determine API size based on aspect ratio
-    w, h = img.size
-    aspect = w / h
-    if aspect > 1.18:
-        api_size = "1536x1024"
-    elif aspect < 0.85:
-        api_size = "1024x1536"
-    else:
-        api_size = "1024x1024"
-
-    # Convert to JPEG for API input
+    # Convert to RGB PNG for API
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])
@@ -70,22 +73,56 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
+    # Determine output size
+    w, h = img.size
+    aspect = w / h
+    if aspect > 1.3:
+        api_size = "1536x1024"
+    elif aspect < 0.77:
+        api_size = "1024x1536"
+    else:
+        api_size = "1024x1024"
+
+    # Encode to base64
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    prepared_bytes = buf.getvalue()
+    img.save(buf, format="PNG")
+    img_b64 = base64.b64encode(buf.getvalue()).decode()
 
     prompt = (
         "Remove the background from this image completely. "
-        "Keep ONLY the main subject/product with pixel-perfect edges. "
-        "The background should be pure solid white (#FFFFFF). "
-        "Do NOT alter the product in any way - preserve all details, colors, shadows, and textures exactly. "
-        "The result should look like a professional product photo on a clean white background."
+        "Keep only the main product/subject with clean, precise edges. "
+        "Replace the background with pure solid white (#FFFFFF). "
+        "Do not alter the product at all. [img-0]"
     )
 
-    result_bytes = await _call_image_edit(prepared_bytes, prompt, "high", api_size)
+    # Call FLUX.1-Kontext-pro via images.generate with image reference
+    client = _get_flux_client()
+
+    response = await asyncio.to_thread(
+        client.images.generate,
+        model=FLUX_DEPLOYMENT,
+        prompt=prompt,
+        n=1,
+        size=api_size,
+        extra_body={
+            "image": [f"data:image/png;base64,{img_b64}"]
+        },
+    )
+
+    # Extract result
+    result_b64 = response.data[0].b64_json
+    if not result_b64:
+        if response.data[0].url:
+            req = urllib.request.Request(response.data[0].url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result_bytes = resp.read()
+        else:
+            raise ValueError("FLUX returned no image data")
+    else:
+        result_bytes = base64.b64decode(result_b64)
 
     elapsed = time.perf_counter() - t0
-    logger.info("Background removal (GPT Image): %.2fs, input=%d bytes", elapsed, len(image_bytes))
+    logger.info("Background removal (FLUX Kontext): %.2fs", elapsed)
 
     # Restore to original size if needed
     result_img = Image.open(BytesIO(result_bytes))
@@ -93,23 +130,22 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
         result_img = result_img.resize(orig_size, Image.LANCZOS)
 
     # Encode output
-    buf = BytesIO()
+    out_buf = BytesIO()
     if output_format == "png":
         if result_img.mode != "RGB":
             result_img = result_img.convert("RGB")
-        result_img.save(buf, format="PNG", optimize=True)
+        result_img.save(out_buf, format="PNG", optimize=True)
     else:
         if result_img.mode != "RGB":
             result_img = result_img.convert("RGB")
-        result_img.save(buf, format="JPEG", quality=92)
+        result_img.save(out_buf, format="JPEG", quality=92)
 
-    return buf.getvalue()
+    return out_buf.getvalue()
 
 
 # ── Smart Resize / Crop ──────────────────────────────────────────────────
 
 def _compute_crop_box(src_w, src_h, target_ratio):
-    """Compute center crop box to achieve target aspect ratio."""
     src_ratio = src_w / src_h
     if src_ratio > target_ratio:
         new_w = int(src_h * target_ratio)
@@ -122,7 +158,6 @@ def _compute_crop_box(src_w, src_h, target_ratio):
 
 
 def _compute_pad_box(src_w, src_h, target_ratio):
-    """Compute padding needed to achieve target aspect ratio."""
     src_ratio = src_w / src_h
     if src_ratio > target_ratio:
         new_h = int(src_w / target_ratio)
