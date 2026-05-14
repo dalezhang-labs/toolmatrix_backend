@@ -102,8 +102,15 @@ def transform_shopline_order(shopline_order: dict) -> dict:
         currency = shopline_order.get('currency', 'USD')
         
         # 时间信息
-        created_at = shopline_order.get('order_at', shopline_order.get('processed_at', ''))
-        updated_at = shopline_order.get('updated_at', '')
+        # Shopline returns order_at/processed_at as None for archived orders;
+        # fall back to created_at so the frontend always has a parseable date.
+        created_at = (
+            shopline_order.get('order_at')
+            or shopline_order.get('processed_at')
+            or shopline_order.get('created_at')
+            or ''
+        )
+        updated_at = shopline_order.get('updated_at') or ''
         
         # 处理 note_attributes 来构建详细的 notes
         note_attributes = shopline_order.get('note_attributes', [])
