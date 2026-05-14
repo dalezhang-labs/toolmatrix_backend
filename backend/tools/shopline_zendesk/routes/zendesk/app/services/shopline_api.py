@@ -9,6 +9,44 @@ from ..models.order import Order, OrderFilters, OrderStatus
 
 logger = logging.getLogger(__name__)
 
+def _normalize_shopline_customer(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce Shopline customer payload into the shape Customer model expects.
+
+    Shopline returns ``tags`` as a comma-separated string, ``total_spent``
+    as a string, and may omit ``addresses``/``default_address``. The
+    Pydantic ``Customer`` model expects ``tags: List[str]`` and
+    ``total_spent: float``. Without this mapping FastAPI silently drops
+    the customer during response serialization.
+    """
+    if not isinstance(raw, dict):
+        return raw
+
+    out = dict(raw)
+
+    tags_raw = out.get("tags")
+    if isinstance(tags_raw, str):
+        out["tags"] = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    elif tags_raw is None:
+        out["tags"] = []
+
+    total_spent = out.get("total_spent")
+    if isinstance(total_spent, str):
+        try:
+            out["total_spent"] = float(total_spent)
+        except (TypeError, ValueError):
+            out["total_spent"] = 0.0
+    elif total_spent is None:
+        out["total_spent"] = 0.0
+
+    if out.get("orders_count") is None:
+        out["orders_count"] = 0
+
+    if out.get("addresses") is None:
+        out["addresses"] = []
+
+    return out
+
+
 class ShoplineAPIService:
     def __init__(self, shopline_domain: str, access_token: str):
         """
@@ -119,11 +157,16 @@ class ShoplineAPIService:
         endpoint returns 500 on this storefront.
         """
         try:
-            return await self._make_request(
+            result = await self._make_request(
                 "GET",
                 "/customers/v2/search.json",
                 params={"query_param": email},
             )
+            result["customers"] = [
+                _normalize_shopline_customer(c)
+                for c in result.get("customers", []) or []
+            ]
+            return result
         except Exception as e:
             logger.error(f"Failed to search customers by email: {e}")
             return {"customers": []}
@@ -131,11 +174,16 @@ class ShoplineAPIService:
     async def search_customers_by_phone(self, phone: str) -> Dict[str, Any]:
         """通过电话搜索客户 (v2 search endpoint)."""
         try:
-            return await self._make_request(
+            result = await self._make_request(
                 "GET",
                 "/customers/v2/search.json",
                 params={"query_param": phone},
             )
+            result["customers"] = [
+                _normalize_shopline_customer(c)
+                for c in result.get("customers", []) or []
+            ]
+            return result
         except Exception as e:
             logger.error(f"Failed to search customers by phone: {e}")
             return {"customers": []}
@@ -159,14 +207,24 @@ class ShoplineAPIService:
     
     async def search_customers_fuzzy(self, search_term: str) -> Dict[str, Any]:
         """模糊搜索客户（支持姓名、邮箱、电话、订单号等）"""
-        return await self._make_request("GET", "/customers/v2/search.json", params={"query_param": search_term})
+        result = await self._make_request("GET", "/customers/v2/search.json", params={"query_param": search_term})
+        result["customers"] = [
+            _normalize_shopline_customer(c)
+            for c in result.get("customers", []) or []
+        ]
+        return result
     
     async def search_customers_by_query(self, query: str) -> Dict[str, Any]:
         """精确查询客户
         Args:
             query: 精确查询条件，格式如 "customer_first_name:John;customer_last_name:Doe"
         """
-        return await self._make_request("GET", "/customers/v2/search.json", params={"query": query})
+        result = await self._make_request("GET", "/customers/v2/search.json", params={"query": query})
+        result["customers"] = [
+            _normalize_shopline_customer(c)
+            for c in result.get("customers", []) or []
+        ]
+        return result
     
     # 订单相关方法
     async def get_orders(self, filters: Optional[OrderFilters] = None, page_info: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
