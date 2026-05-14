@@ -406,25 +406,51 @@ async def get_orders(
     """获取订单列表"""
     try:
         shopline_service = get_shopline_service(request)
-        
+
         # 处理邮箱参数的兼容性：优先使用 customerEmail，如果没有则使用 email
         final_email = customerEmail or email
-        
-        filters = OrderFilters(
-            status=status,
-            financial_status=financial_status,
-            fulfillment_status=fulfillment_status,
-            email=final_email,
-            phone=phone,
-            customer_id=customer_id
-        )
-        
-        result = await shopline_service.get_orders(filters, page, limit)
-        
-        raw_orders = result.get('orders', [])
+
+        # When filtering by email, the legacy /orders.json?email= endpoint
+        # silently drops archived orders. Resolve the customer first via
+        # the v2 search endpoint, then fetch all orders (including archived)
+        # via /customers/{id}/orders.json?status=any.
+        if final_email and not customer_id:
+            try:
+                cust_resp = await shopline_service.search_customers_by_email(final_email)
+                cust_list = cust_resp.get("customers", []) or []
+                if cust_list:
+                    resolved_id = str(cust_list[0].get("id") or "")
+                    if resolved_id:
+                        customer_id = resolved_id
+                        # Email no longer needed once we have a customer_id.
+                        final_email = None
+            except Exception as resolve_err:
+                logger.warning(
+                    f"Failed to resolve customer by email {final_email}: {resolve_err}"
+                )
+
+        if customer_id:
+            orders_payload = await shopline_service.get_orders_by_customer(
+                customer_id, limit=limit
+            )
+            raw_orders = orders_payload.get("orders") or []
+            total = len(raw_orders)
+        else:
+            filters = OrderFilters(
+                status=status,
+                financial_status=financial_status,
+                fulfillment_status=fulfillment_status,
+                email=final_email,
+                phone=phone,
+                customer_id=customer_id,
+            )
+            result = await shopline_service.get_orders(filters, page, limit)
+            # Shopline may return {"orders": null} when nothing matches.
+            raw_orders = result.get("orders") or []
+            total = result.get("total", len(raw_orders))
+
         # 转换订单数据格式
         orders = [transform_shopline_order(order) for order in raw_orders]
-        total = result.get('total', len(orders))
         
         paginated_response = PaginatedResponse(
             items=orders,
@@ -455,8 +481,8 @@ async def get_orders_by_name(
     try:
         shopline_service = get_shopline_service(request)
         result = await shopline_service.get_orders_by_name(order_name)
-        
-        raw_orders = result.get('orders', [])
+
+        raw_orders = result.get('orders') or []
         # 转换订单数据格式
         orders = [transform_shopline_order(order) for order in raw_orders]
         
@@ -481,9 +507,9 @@ async def get_orders_by_customer(
     """获取客户的订单"""
     try:
         shopline_service = get_shopline_service(request)
-        result = await shopline_service.get_orders_by_customer(customer_id, page, limit)
-        
-        raw_orders = result.get('orders', [])
+        result = await shopline_service.get_orders_by_customer(customer_id, limit=limit)
+
+        raw_orders = result.get('orders') or []
         # 转换订单数据格式
         orders = [transform_shopline_order(order) for order in raw_orders]
         total = result.get('total', len(orders))
